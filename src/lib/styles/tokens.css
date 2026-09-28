@@ -1,0 +1,64 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  --color-surface: #131316;
+  --color-surface-dim: #131316;
+  --color-surface-bright: #39393c;
+  --color-surface-lowest: #0e0e11;
+  --color-surface-low: #1b1b1e;
+  --color-surface-container: #1f1f22;
+  --color-surface-high: #2a2a2d;
+  --color-surface-highest: #353438;
+  --color-text: #e4e1e6;
+  --color-text-strong: #ffffff;
+  --color-text-muted: #a1a1aa;
+  --color-text-variant: #c7c4d7;
+  --color-primary: #6366f1;
+  --color-primary-hover: #4f46e5;
+  --color-primary-soft: rgba(99, 102, 241, 0.22);
+  --color-precision: #0ea5e9;
+  --color-success: #10b981;
+  --color-warning: #f59e0b;
+  --color-danger: #ef4444;
+  --color-glass: rgba(24, 24, 27, 0.88);
+  --color-glass-level-2: rgba(30, 30, 36, 0.94);
+  --color-glass-rim: rgba(255, 255, 255, 0.12);
+  --color-glass-ambient: rgba(255, 255, 255, 0.06);
+  --color-divider: rgba(255, 255, 255, 0.08);
+  --color-dim-overlay: rgba(10, 12, 16, 0.35);
+
+  --font-sans: Inter, "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+  --font-size-xs: 10px;
+  --font-size-sm: 12px;
+  --font-size-body: 13px;
+  --font-size-md: 14px;
+  --font-size-lg: 16px;
+  --font-size-xl: 20px;
+  --line-height-tight: 1.25;
+  --line-height-body: 1.4;
+  --font-weight-semibold: 600;
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-full: 9999px;
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 24px;
+  --shadow-l1:
+    0 4px 6px -1px rgba(0, 0, 0, 0.3),
+    0 12px 24px -4px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  --shadow-l2:
+    0 10px 15px -3px rgba(0, 0, 0, 0.4),
+    0 24px 48px -8px rgba(0, 0, 0, 0.7),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16);
+}
