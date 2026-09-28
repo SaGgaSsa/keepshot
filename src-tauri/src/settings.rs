@@ -18,7 +18,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            capture_shortcut: "Ctrl+Shift+X".to_string(),
+            capture_shortcut: "PrintScreen".to_string(),
             history_shortcut: "Ctrl+PrintScreen".to_string(),
             save_folder: None,
             onboarding_done: false,
