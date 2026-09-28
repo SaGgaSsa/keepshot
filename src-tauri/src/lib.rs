@@ -40,7 +40,10 @@ pub fn run() {
             responder.respond(
                 tauri::http::Response::builder()
                     .status(status)
-                    .header(tauri::http::header::CONTENT_TYPE, "image/bmp")
+                    .header(
+                        tauri::http::header::CONTENT_TYPE,
+                        "application/octet-stream",
+                    )
                     .header("Cache-Control", "no-store")
                     .body(body)
                     .unwrap(),

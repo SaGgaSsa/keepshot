@@ -4,7 +4,7 @@ use image::{ColorType, Rgba, RgbaImage};
 use serde::Deserialize;
 
 use crate::capture::VirtualBounds;
-use crate::frames::{FrameEntry, BMP_PIXEL_OFFSET};
+use crate::frames::FrameEntry;
 
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -67,10 +67,6 @@ pub fn compose(
             },
         )?;
     }
-    // GDI captures can carry a zero alpha channel; exported images must be opaque.
-    for pixel in output.pixels_mut() {
-        pixel.0[3] = 255;
-    }
     Ok(output)
 }
 
@@ -114,12 +110,8 @@ fn copy_intersection(
     let output_bytes = output.as_mut();
 
     for row in 0..copy_height {
-        let source_offset = BMP_PIXEL_OFFSET
-            .checked_add(
-                (source_y + row)
-                    .checked_mul(source_stride)
-                    .ok_or_else(|| "Source row offset is too large".to_string())?,
-            )
+        let source_offset = (source_y + row)
+            .checked_mul(source_stride)
             .and_then(|offset| offset.checked_add(source_x.checked_mul(4)?))
             .ok_or_else(|| "Source pixel offset is too large".to_string())?;
         let source_end = source_offset
@@ -134,7 +126,7 @@ fn copy_intersection(
             .ok_or_else(|| "Destination row end is too large".to_string())?;
         let source_row = source
             .get(source_offset..source_end)
-            .ok_or_else(|| format!("BMP pixel data is truncated for {}", frame.monitor.label))?;
+            .ok_or_else(|| format!("Frame pixel data is truncated for {}", frame.monitor.label))?;
         let destination_row = output_bytes
             .get_mut(destination_offset..destination_end)
             .ok_or_else(|| "Selection buffer is smaller than expected".to_string())?;
@@ -143,15 +135,17 @@ fn copy_intersection(
     Ok(())
 }
 
+/// Captures are always opaque, so drop the alpha channel for smaller, more compatible PNGs.
 pub fn save_png(path: &Path, image: &RgbaImage) -> Result<(), String> {
-    image::save_buffer(
-        path,
-        image.as_raw(),
-        image.width(),
-        image.height(),
-        ColorType::Rgba8,
-    )
-    .map_err(|error| format!("Could not save {}: {error}", path.display()))
+    let rgb: Vec<u8> = image
+        .as_raw()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .flat_map(|&[red, green, blue, _]| [red, green, blue])
+        .collect();
+    image::save_buffer(path, &rgb, image.width(), image.height(), ColorType::Rgb8)
+        .map_err(|error| format!("Could not save {}: {error}", path.display()))
 }
 
 pub fn unique_capture_path(directory: &Path, filename: &str) -> PathBuf {

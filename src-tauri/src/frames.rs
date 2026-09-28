@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use crate::capture::{CapturedFrame, MonitorInfo, VirtualBounds};
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
-pub const BMP_PIXEL_OFFSET: usize = 122;
 
 pub fn next_session_id() -> String {
     format!(
@@ -31,7 +30,7 @@ pub struct PendingFrames {
 pub struct FrontendImageTiming {
     pub label: String,
     pub load_ms: f64,
-    pub decode_ms: f64,
+    pub paint_ms: f64,
 }
 
 #[derive(Clone, Serialize)]
@@ -45,9 +44,9 @@ pub struct MonitorMetrics {
     pub height: u32,
     pub scale_factor: f32,
     pub capture_ms: f64,
-    pub bmp_ms: f64,
+    pub prepare_ms: f64,
     pub load_ms: f64,
-    pub decode_ms: f64,
+    pub paint_ms: f64,
 }
 
 #[derive(Clone, Serialize)]
@@ -67,7 +66,7 @@ pub struct FrameEntry {
     pub offset_x: u32,
     pub offset_y: u32,
     pub capture_ms: f64,
-    pub bmp_ms: f64,
+    pub prepare_ms: f64,
 }
 
 impl FrameEntry {
@@ -78,7 +77,7 @@ impl FrameEntry {
             offset_x: 0,
             offset_y: 0,
             capture_ms: frame.capture_ms,
-            bmp_ms: frame.bmp_ms,
+            prepare_ms: frame.prepare_ms,
         }
     }
 }
@@ -208,7 +207,7 @@ impl FrameStore {
         }
         if timings
             .iter()
-            .any(|timing| !timing.load_ms.is_finite() || !timing.decode_ms.is_finite())
+            .any(|timing| !timing.load_ms.is_finite() || !timing.paint_ms.is_finite())
         {
             return Err("Overlay image timings are invalid".to_string());
         }
@@ -249,9 +248,9 @@ impl FrameStore {
                 height: frame.monitor.height,
                 scale_factor: frame.monitor.scale_factor,
                 capture_ms: frame.capture_ms,
-                bmp_ms: frame.bmp_ms,
+                prepare_ms: frame.prepare_ms,
                 load_ms: timing.load_ms,
-                decode_ms: timing.decode_ms,
+                paint_ms: timing.paint_ms,
             });
         }
         monitors.sort_by(|left, right| left.label.cmp(&right.label));

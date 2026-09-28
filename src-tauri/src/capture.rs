@@ -30,7 +30,7 @@ pub struct CapturedFrame {
     pub monitor: MonitorInfo,
     pub bytes: Vec<u8>,
     pub capture_ms: f64,
-    pub bmp_ms: f64,
+    pub prepare_ms: f64,
 }
 
 pub fn monitor_infos() -> Result<Vec<MonitorInfo>, String> {
@@ -126,54 +126,22 @@ fn capture_index(index: usize, info: MonitorInfo) -> Result<CapturedFrame, Strin
             info.label
         ));
     }
-    let bmp_started = Instant::now();
-    let bytes = create_bmp_v4(&image)?;
-    let bmp_ms = bmp_started.elapsed().as_secs_f64() * 1000.0;
+    let prepare_started = Instant::now();
+    let bytes = into_opaque_rgba(image);
+    let prepare_ms = prepare_started.elapsed().as_secs_f64() * 1000.0;
     Ok(CapturedFrame {
         monitor: info,
         bytes,
         capture_ms,
-        bmp_ms,
+        prepare_ms,
     })
 }
 
-fn create_bmp_v4(image: &RgbaImage) -> Result<Vec<u8>, String> {
-    let pixel_bytes = image
-        .width()
-        .checked_mul(image.height())
-        .and_then(|pixels| pixels.checked_mul(4))
-        .ok_or_else(|| "Monitor image is too large to encode".to_string())?;
-    let file_size = 122u32
-        .checked_add(pixel_bytes)
-        .ok_or_else(|| "Monitor BMP is too large".to_string())?;
-    let mut bytes = Vec::with_capacity(file_size as usize);
-    bytes.extend_from_slice(b"BM");
-    bytes.extend_from_slice(&file_size.to_le_bytes());
-    bytes.extend_from_slice(&0u16.to_le_bytes());
-    bytes.extend_from_slice(&0u16.to_le_bytes());
-    bytes.extend_from_slice(&122u32.to_le_bytes());
-
-    bytes.extend_from_slice(&108u32.to_le_bytes());
-    bytes.extend_from_slice(&image.width().to_le_bytes());
-    let top_down_height = i32::try_from(image.height())
-        .map_err(|_| "Monitor image height is too large".to_string())?
-        .checked_neg()
-        .ok_or_else(|| "Monitor image height is too large".to_string())?;
-    bytes.extend_from_slice(&top_down_height.to_le_bytes());
-    bytes.extend_from_slice(&1u16.to_le_bytes());
-    bytes.extend_from_slice(&32u16.to_le_bytes());
-    bytes.extend_from_slice(&3u32.to_le_bytes());
-    bytes.extend_from_slice(&pixel_bytes.to_le_bytes());
-    bytes.extend_from_slice(&0i32.to_le_bytes());
-    bytes.extend_from_slice(&0i32.to_le_bytes());
-    bytes.extend_from_slice(&0u32.to_le_bytes());
-    bytes.extend_from_slice(&0u32.to_le_bytes());
-    bytes.extend_from_slice(&0x000000ffu32.to_le_bytes());
-    bytes.extend_from_slice(&0x0000ff00u32.to_le_bytes());
-    bytes.extend_from_slice(&0x00ff0000u32.to_le_bytes());
-    bytes.extend_from_slice(&0xff000000u32.to_le_bytes());
-    bytes.extend_from_slice(&0x7352_4742u32.to_le_bytes());
-    bytes.extend_from_slice(&[0; 48]);
-    bytes.extend_from_slice(image.as_raw());
-    Ok(bytes)
+/// GDI captures can carry a zero alpha channel; the overlay canvas and exports need opaque pixels.
+fn into_opaque_rgba(image: RgbaImage) -> Vec<u8> {
+    let mut bytes = image.into_raw();
+    for pixel in bytes.as_chunks_mut::<4>().0 {
+        pixel[3] = 255;
+    }
+    bytes
 }

@@ -22,7 +22,7 @@
     bounds: VirtualBounds;
     monitors: MonitorGeometry[];
   };
-  type ImageTiming = { label: string; loadMs: number; decodeMs: number };
+  type ImageTiming = { label: string; loadMs: number; paintMs: number };
   type Gesture = {
     pointerId: number;
     mode: "draw" | "move" | "resize";
@@ -41,7 +41,6 @@
   let notice = $state("");
   let rootElement: HTMLElement;
   let loadSequence = 0;
-  const imageLoadTimes = new Map<string, number>();
   let noticeTimeout: ReturnType<typeof setTimeout> | undefined;
 
   const visibleRect = $derived(gesture?.mode === "draw" ? previewRect : selection);
@@ -88,7 +87,6 @@
     if (session?.session === next.session) return;
     const sequence = ++loadSequence;
     const arrivedAt = performance.now();
-    imageLoadTimes.clear();
     loading = true;
     selection = null;
     previewRect = null;
@@ -96,32 +94,30 @@
     void waitForFrames(next, sequence, arrivedAt);
   }
 
-  function recordImageLoad(event: Event) {
-    const image = event.currentTarget as HTMLImageElement;
-    const label = image.dataset.monitorLabel;
-    if (label) imageLoadTimes.set(label, performance.now());
-  }
-
   async function waitForFrames(next: OverlaySession, sequence: number, arrivedAt: number) {
     await tick();
     try {
       const timings = await Promise.all(
         next.monitors.map(async (monitor): Promise<ImageTiming> => {
-          const image = document.querySelector<HTMLImageElement>(`img[data-monitor-label="${CSS.escape(monitor.label)}"]`);
-          if (!image) throw new Error(`Frame image for ${monitor.label} was not mounted`);
-          if (!image.complete) {
-            await new Promise<void>((resolve, reject) => {
-              image.addEventListener("load", () => resolve(), { once: true });
-              image.addEventListener("error", () => reject(new Error(`Frame load failed for ${monitor.label}`)), { once: true });
-            });
+          const canvas = document.querySelector<HTMLCanvasElement>(`canvas[data-monitor-label="${CSS.escape(monitor.label)}"]`);
+          if (!canvas) throw new Error(`Frame canvas for ${monitor.label} was not mounted`);
+          // Frames arrive as raw opaque RGBA, so painting skips image decoding entirely.
+          const response = await fetch(frameUrl(monitor));
+          if (!response.ok) throw new Error(`Frame load failed for ${monitor.label}`);
+          const buffer = await response.arrayBuffer();
+          const loadedAt = performance.now();
+          if (sequence !== loadSequence) throw new Error("Stale capture session");
+          const expectedBytes = monitor.width * monitor.height * 4;
+          if (buffer.byteLength !== expectedBytes) {
+            throw new Error(`Frame for ${monitor.label} has ${buffer.byteLength} bytes, expected ${expectedBytes}`);
           }
-          const loadFinishedAt = imageLoadTimes.get(monitor.label) ?? performance.now();
-          await image.decode();
-          const decodedAt = performance.now();
+          const context = canvas.getContext("2d", { alpha: false });
+          if (!context) throw new Error(`Canvas 2D is unavailable for ${monitor.label}`);
+          context.putImageData(new ImageData(new Uint8ClampedArray(buffer), monitor.width, monitor.height), 0, 0);
           return {
             label: monitor.label,
-            loadMs: loadFinishedAt - arrivedAt,
-            decodeMs: decodedAt - arrivedAt,
+            loadMs: loadedAt - arrivedAt,
+            paintMs: performance.now() - arrivedAt,
           };
         }),
       );
@@ -364,15 +360,14 @@
 >
   {#if session}
     {#each session.monitors as monitor (monitor.label)}
-      <img
+      <canvas
         class="monitor-frame"
         data-monitor-label={monitor.label}
+        width={monitor.width}
+        height={monitor.height}
         style={monitorStyle(monitor)}
-        src={frameUrl(monitor)}
-        alt="Frozen frame of {monitor.name}"
-        draggable="false"
-        onload={recordImageLoad}
-      />
+        aria-label="Frozen frame of {monitor.name}"
+      ></canvas>
     {/each}
     <svg class="dimmer-svg" aria-hidden="true">
       <defs>

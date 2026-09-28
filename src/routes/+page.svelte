@@ -11,9 +11,9 @@
     height: number;
     scaleFactor: number;
     captureMs: number;
-    bmpMs: number;
+    prepareMs: number;
     loadMs: number;
-    decodeMs: number;
+    paintMs: number;
   };
 
   type CaptureMetrics = {
@@ -89,14 +89,14 @@
 
     {#if metrics}
       <div class="summary-grid">
-        <div class="summary-card"><span>Capture + BMP</span><strong>{duration(metrics.captureTotalMs)}</strong></div>
+        <div class="summary-card"><span>Capture + prepare</span><strong>{duration(metrics.captureTotalMs)}</strong></div>
         <div class="summary-card"><span>Frame event emitted</span><strong>{duration(metrics.emitMs)}</strong></div>
         <div class="summary-card"><span>Overlay shown</span><strong>{duration(metrics.shownMs)}</strong></div>
       </div>
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>Monitor</th><th>Physical bounds</th><th>Scale</th><th>Capture</th><th>BMP</th><th>Load</th><th>Decode</th></tr>
+            <tr><th>Monitor</th><th>Physical bounds</th><th>Scale</th><th>Capture</th><th>Prepare</th><th>Load</th><th>Paint</th></tr>
           </thead>
           <tbody>
             {#each metrics.monitors as monitor (monitor.label)}
@@ -105,9 +105,9 @@
                 <td class="mono">{monitor.x}, {monitor.y} · {monitor.width} × {monitor.height}</td>
                 <td class="mono">{monitor.scaleFactor.toFixed(2)}×</td>
                 <td class="mono">{duration(monitor.captureMs)}</td>
-                <td class="mono">{duration(monitor.bmpMs)}</td>
+                <td class="mono">{duration(monitor.prepareMs)}</td>
                 <td class="mono">{duration(monitor.loadMs)}</td>
-                <td class="mono">{duration(monitor.decodeMs)}</td>
+                <td class="mono">{duration(monitor.paintMs)}</td>
               </tr>
             {/each}
           </tbody>
