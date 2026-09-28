@@ -9,5 +9,8 @@ node_modules
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 
+# Playwright MCP screenshots and logs
+.playwright-mcp
+
 # Local-only design mockup (Google Stitch export, contains sample secrets)
 docs/design/stitch-reference.html

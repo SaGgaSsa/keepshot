@@ -8,7 +8,9 @@ A lightweight, open source screenshot tool — a modern replacement for Lightsho
 
 Windows first; Linux planned. Built with [Tauri 2](https://tauri.app), Rust, Svelte and TypeScript.
 
-> Status: early development. Nothing to install yet.
+**[Download for Windows](https://saggassa.github.io/keepshot/)** · [Releases](https://github.com/SaGgaSsa/keepshot/releases)
+
+> Status: early development.
 
 ## Development
 

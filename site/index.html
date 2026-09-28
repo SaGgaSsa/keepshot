@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>KeepShot — screenshots with a memory</title>
+    <meta
+      name="description"
+      content="A lightweight, open source screenshot tool for Windows with a local capture history and re-editable annotations."
+    />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#131316" />
+    <link rel="icon" href="icon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap"
+    />
+    <link rel="stylesheet" href="styles.css" />
+    <script src="main.js" defer></script>
+  </head>
+  <body>
+    <header class="nav">
+      <a class="brand" href="./">
+        <img src="icon.svg" alt="" width="28" height="28" />
+        <span>KeepShot</span>
+      </a>
+      <nav>
+        <a href="#features">Features</a>
+        <a href="#releases">Release notes</a>
+        <a href="https://github.com/SaGgaSsa/keepshot">GitHub</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero">
+        <img class="hero-icon" src="icon.svg" alt="" width="88" height="88" />
+        <h1>Screenshots with a memory.</h1>
+        <p class="lede">
+          A lightweight, open source screenshot tool for Windows. Select, annotate, copy — and
+          reopen any recent capture later with its annotations still editable.
+        </p>
+        <div class="cta">
+          <a
+            id="download"
+            class="btn btn-primary"
+            href="https://github.com/SaGgaSsa/keepshot/releases/latest"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 19h14" />
+            </svg>
+            Download for Windows
+          </a>
+          <a class="btn btn-glass" href="https://github.com/SaGgaSsa/keepshot">View on GitHub</a>
+        </div>
+        <p id="download-meta" class="meta">Windows 10 / 11 · x64 · Free and MIT licensed</p>
+        <p class="hint">
+          Press <span class="combo"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>X</kbd></span> to capture ·
+          <span class="combo"><kbd>Ctrl</kbd><kbd>PrtSc</kbd></span> for history
+        </p>
+      </section>
+
+      <section class="shots" id="shots" aria-label="Screenshots">
+        <figure>
+          <img src="img/editor.webp" alt="Annotating a selection in the KeepShot overlay" loading="lazy" />
+          <figcaption>Select a region and annotate it in place.</figcaption>
+        </figure>
+        <figure>
+          <img src="img/history.webp" alt="The KeepShot history panel" loading="lazy" />
+          <figcaption>Recent captures stay on your machine, ready to reopen.</figcaption>
+        </figure>
+      </section>
+
+      <section id="features" class="features">
+        <h2>Built for the capture you take fifty times a day</h2>
+        <div class="grid">
+          <article>
+            <h3>Local history</h3>
+            <p>Your last ~30 captures are kept on disk. No account, no cloud, no upload.</p>
+          </article>
+          <article>
+            <h3>Re-editable annotations</h3>
+            <p>Reopen a capture from history and keep editing its arrows, text and shapes.</p>
+          </article>
+          <article>
+            <h3>Multi-monitor done right</h3>
+            <p>One overlay across every display, including negative coordinates.</p>
+          </article>
+          <article>
+            <h3>Tools that matter</h3>
+            <p>
+              Straight and curved arrows, shapes, text, a real marker highlighter, blur and
+              numbered steps.
+            </p>
+          </article>
+          <article>
+            <h3>Instant</h3>
+            <p>The overlay is ready before you finish pressing the hotkey. Tiny installer.</p>
+          </article>
+          <article>
+            <h3>Updates itself</h3>
+            <p>Signed updates from GitHub Releases, one click from the tray.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="releases" class="releases">
+        <h2>Release notes</h2>
+        <div id="release-list">
+          <p class="muted">
+            See all releases on
+            <a href="https://github.com/SaGgaSsa/keepshot/releases">GitHub</a>.
+          </p>
+        </div>
+      </section>
+
+      <aside class="note">
+        <strong>Windows SmartScreen warning?</strong> The installer is not code-signed yet. Choose
+        <em>More info → Run anyway</em>. On Windows 11, Print Screen opens the Snipping Tool by
+        default; you can turn that off in Settings › Accessibility › Keyboard.
+      </aside>
+    </main>
+
+    <footer>
+      <span>KeepShot · MIT License</span>
+      <a href="https://github.com/SaGgaSsa/keepshot/issues">Report an issue</a>
+    </footer>
+  </body>
+</html>

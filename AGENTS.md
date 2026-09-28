@@ -42,6 +42,7 @@ Grabación de video/GIF, OCR, subida a la nube, scroll capture, historial de por
 
 - `src/` — frontend SvelteKit (SPA, sin SSR).
 - `src-tauri/` — backend Rust (`src/lib.rs` es el entry point de la app).
+- `site/` — landing page estática (HTML/CSS/JS sin build) publicada en GitHub Pages por `.github/workflows/pages.yml` en cada push a `main` que toque `site/`. La descarga y las release notes se leen de la API de GitHub Releases en el navegador; las capturas van en `site/img/` (`editor.webp`, `history.webp`) y se ocultan si faltan.
 - `docs/design/DESIGN.md` — sistema de diseño (tokens, componentes, elevación).
 - `docs/design/stitch-reference.html` — mockup exportado de Google Stitch, **solo local (en `.gitignore`, no se versiona)**. Puede no existir en otros clones. **Es solo referencia visual, no código real**: no copiar su Tailwind por CDN ni su estructura; tomar de ahí la intención visual y reimplementar con los tokens propios.
 
