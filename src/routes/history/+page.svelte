@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 
@@ -80,6 +80,12 @@
     }
   }
 
+
+  function scrollSelectedIntoView() {
+    void tick().then(() => {
+      document.querySelectorAll("article")[selectedIndex]?.scrollIntoView({ block: "nearest" });
+    });
+  }
   function onKeyDown(event: KeyboardEvent): void {
     if (event.key === "Enter" && event.target instanceof HTMLElement
       && event.target.closest("button")) return;
@@ -90,20 +96,15 @@
     }
     if (items.length === 0) return;
     const current = items[selectedIndex];
-    if (event.key === "ArrowRight") {
+    if (event.key === "ArrowDown") {
       event.preventDefault();
       selectedIndex = Math.min(items.length - 1, selectedIndex + 1);
-    } else if (event.key === "ArrowLeft") {
-      event.preventDefault();
-      selectedIndex = Math.max(0, selectedIndex - 1);
-    } else if (event.key === "ArrowDown") {
-      event.preventDefault();
-      selectedIndex = Math.min(items.length - 1, selectedIndex + 2);
+      scrollSelectedIntoView();
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
-      selectedIndex = Math.max(0, selectedIndex - 2);
-    }
-    else if (event.key === "Enter" && current) {
+      selectedIndex = Math.max(0, selectedIndex - 1);
+      scrollSelectedIntoView();
+    } else if (event.key === "Enter" && current) {
       event.preventDefault();
       void copy(current, true);
     } else if (event.key.toLowerCase() === "e" && current) {
@@ -224,17 +225,13 @@
     background: transparent;
   }
 
+  /* The panel itself has no background: only the title and the capture cards float over the desktop. */
   .panel {
     box-sizing: border-box;
     width: 100%;
     height: 100%;
     overflow: hidden;
-    padding: 18px;
-    border: 1px solid var(--color-glass-rim);
-    border-radius: 16px;
-    background: var(--color-glass);
-    backdrop-filter: blur(16px) saturate(180%);
-    box-shadow: var(--shadow-l1);
+    padding: 8px 10px;
     color: var(--color-text);
     outline: none;
   }
@@ -243,20 +240,30 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 18px;
+    margin-bottom: 10px;
+    padding: 0 2px;
   }
 
   h1 {
     margin: 0;
+    color: #fff;
     font-size: 20px;
     font-weight: 600;
     line-height: 28px;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8), 0 0 12px rgba(0, 0, 0, 0.6);
   }
 
   header p {
     margin: 1px 0 0;
-    color: var(--color-text-muted);
+    color: #e4e4e7;
     font-size: 12px;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+  }
+
+  .close {
+    border-color: var(--color-glass-rim);
+    background: var(--color-glass);
+    backdrop-filter: blur(16px) saturate(180%);
   }
 
   button {
@@ -288,23 +295,31 @@
   }
 
   .grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 16px 12px;
-    height: calc(100% - 66px);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    height: calc(100% - 50px);
     overflow-y: auto;
     padding: 2px 2px 12px;
+    scrollbar-width: none;
   }
 
   article {
     position: relative;
+    flex: none;
     min-width: 0;
+    padding: 8px;
+    border: 1px solid var(--color-glass-rim);
+    border-radius: 12px;
+    background: var(--color-glass);
+    backdrop-filter: blur(16px) saturate(180%);
+    box-shadow: var(--shadow-l1);
   }
 
   .preview {
     display: flex;
     width: 100%;
-    height: 118px;
+    height: 180px;
     overflow: hidden;
     padding: 0;
     border: 1px solid var(--color-divider);
@@ -341,8 +356,8 @@
 
   .actions {
     position: absolute;
-    top: 8px;
-    right: 8px;
+    top: 14px;
+    right: 14px;
     display: flex;
     gap: 2px;
     padding: 3px;
@@ -376,7 +391,12 @@
     display: grid;
     justify-items: center;
     align-content: center;
-    height: calc(100% - 80px);
+    padding: 28px 16px;
+    border: 1px solid var(--color-glass-rim);
+    border-radius: 12px;
+    background: var(--color-glass);
+    backdrop-filter: blur(16px) saturate(180%);
+    box-shadow: var(--shadow-l1);
     color: var(--color-text-muted);
     text-align: center;
   }

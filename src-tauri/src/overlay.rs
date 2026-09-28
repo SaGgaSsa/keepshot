@@ -53,6 +53,7 @@ pub fn create_history_window(app: &AppHandle) -> Result<WebviewWindow, String> {
         .title("KeepShot History")
         .inner_size(420.0, 560.0)
         .transparent(true)
+        .shadow(false)
         .decorations(false)
         .always_on_top(true)
         .skip_taskbar(true)
