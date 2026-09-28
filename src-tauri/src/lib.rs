@@ -8,6 +8,7 @@ mod overlay;
 mod platform;
 mod settings;
 mod tray;
+mod updates;
 
 use std::fs;
 use std::time::Instant;
@@ -16,6 +17,7 @@ use tauri_plugin_autostart::ManagerExt as AutostartManagerExt;
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+use updates::{check_for_updates, get_update_status, install_update};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -23,6 +25,7 @@ pub fn run() {
         .manage(frames::FrameStore::default())
         .manage(overlay::OverlayRegistry::default())
         .manage(settings::SettingsState::default())
+        .manage(updates::UpdateState::default())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             tray::show_settings(app);
         }))
@@ -33,6 +36,7 @@ pub fn run() {
             Some(vec!["--autostart"]),
         ))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .register_asynchronous_uri_scheme_protocol("history", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
             let entry_id = request
@@ -137,10 +141,14 @@ pub fn run() {
             open_save_folder,
             open_keyboard_settings,
             check_print_screen,
-            complete_onboarding
+            complete_onboarding,
+            get_update_status,
+            check_for_updates,
+            install_update
         ])
         .setup(|app| {
             applog::init(app.handle());
+            updates::start_automatic(app.handle().clone());
             initialize_settings(app.handle());
             if let Err(error) = tray::build(app.handle(), start_capture) {
                 crate::log_error!("Could not initialize system tray: {error}");

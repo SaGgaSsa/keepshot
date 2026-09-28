@@ -4,6 +4,7 @@
   import { onMount } from "svelte";
   import Diagnostics from "$lib/settings/Diagnostics.svelte";
   import ShortcutRecorder from "$lib/settings/ShortcutRecorder.svelte";
+  import Updates from "$lib/settings/Updates.svelte";
 
   type Settings = {
     captureShortcut: string;
@@ -267,9 +268,11 @@
       </label>
     </section>
 
+    <Updates />
+
     <details class="panel diagnostics">
       <summary>
-        <span class="section-title"><span>04</span><h2>Diagnostics</h2></span>
+        <span class="section-title"><span>05</span><h2>Diagnostics</h2></span>
         <span class="chevron">⌄</span>
       </summary>
       <Diagnostics />

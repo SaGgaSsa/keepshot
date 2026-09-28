@@ -3,7 +3,7 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager};
 
-use crate::{overlay, settings};
+use crate::{overlay, settings, updates};
 
 /// A simplified two-layer mark that stays legible at 16-20 px, unlike the full app icon.
 fn tray_icon() -> Result<Image<'static>, String> {
@@ -42,6 +42,14 @@ pub fn build(app: &AppHandle, start_capture: fn(AppHandle)) -> Result<(), String
                 }
             }
             "settings" => show_settings(app),
+            "install-update" => {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = updates::install_update(app.clone()).await {
+                        crate::log_error!("Could not install update from tray: {error}");
+                    }
+                });
+            }
             "quit" => app.exit(0),
             _ => {}
         })
@@ -56,7 +64,14 @@ pub fn update_menu(app: &AppHandle) -> Result<(), String> {
         .tray_by_id("main")
         .ok_or_else(|| "System tray icon is unavailable".to_string())?;
     tray.set_menu(Some(menu))
-        .map_err(|error| format!("Could not update tray menu: {error}"))
+        .map_err(|error| format!("Could not update tray menu: {error}"))?;
+    let tooltip = if updates::available_version(app).is_some() {
+        "KeepShot — update available"
+    } else {
+        "KeepShot"
+    };
+    tray.set_tooltip(Some(tooltip))
+        .map_err(|error| format!("Could not update tray tooltip: {error}"))
 }
 
 pub fn show_settings(app: &AppHandle) {
@@ -72,6 +87,18 @@ pub fn show_settings(app: &AppHandle) {
 
 fn make_menu(app: &AppHandle) -> Result<Menu<tauri::Wry>, String> {
     let current = settings::snapshot(app)?;
+    let update = updates::available_version(app)
+        .map(|version| {
+            MenuItem::with_id(
+                app,
+                "install-update",
+                format!("Install update v{version}"),
+                true,
+                None::<&str>,
+            )
+            .map_err(|error| error.to_string())
+        })
+        .transpose()?;
     let capture = MenuItem::with_id(
         app,
         "capture",
@@ -88,17 +115,35 @@ fn make_menu(app: &AppHandle) -> Result<Menu<tauri::Wry>, String> {
         .map_err(|error| error.to_string())?;
     let first_separator = PredefinedMenuItem::separator(app).map_err(|error| error.to_string())?;
     let second_separator = PredefinedMenuItem::separator(app).map_err(|error| error.to_string())?;
-    Menu::with_items(
-        app,
-        &[
-            &capture,
-            &history,
-            &first_separator,
-            &settings,
-            &second_separator,
-            &quit,
-        ],
-    )
+    if let Some(update) = update {
+        let update_separator =
+            PredefinedMenuItem::separator(app).map_err(|error| error.to_string())?;
+        Menu::with_items(
+            app,
+            &[
+                &update,
+                &update_separator,
+                &capture,
+                &history,
+                &first_separator,
+                &settings,
+                &second_separator,
+                &quit,
+            ],
+        )
+    } else {
+        Menu::with_items(
+            app,
+            &[
+                &capture,
+                &history,
+                &first_separator,
+                &settings,
+                &second_separator,
+                &quit,
+            ],
+        )
+    }
     .map_err(|error| error.to_string())
 }
 
