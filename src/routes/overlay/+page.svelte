@@ -5,18 +5,27 @@
   import Toolbar from "$lib/overlay/Toolbar.svelte";
   import {
     annotationHandle,
+    arrowCurveHandlePoint,
     createLayer,
+    curveControlForMidpoint,
     hitTest,
     isBox,
+    isRedact,
     isSegment,
     isText,
     moveLayer,
     resizeLayer,
     type AnnotationTool,
+    type ArrowLayer,
     type Layer,
+    type RedactMode,
     type ResizeHandle,
   } from "$lib/annotations/model";
-  import { renderLayers } from "$lib/annotations/render";
+  import {
+    createFrameBaseSource,
+    renderLayers,
+    type BaseSource,
+  } from "$lib/annotations/render";
   import { LayerHistory } from "$lib/annotations/history";
   import {
     actionBarPosition,
@@ -41,7 +50,7 @@
   type ImageTiming = { label: string; loadMs: number; paintMs: number };
   type Gesture = {
     pointerId: number;
-    mode: "draw" | "move" | "resize" | "annotate" | "moveLayer" | "resizeLayer";
+    mode: "draw" | "move" | "resize" | "annotate" | "moveLayer" | "resizeLayer" | "curve";
     start: PhysicalPoint;
     origin: PhysicalRect | null;
     handle?: string;
@@ -60,6 +69,7 @@
   let notice = $state("");
   let rootElement: HTMLElement;
   let loadSequence = 0;
+  let renderScheduled = false;
   let noticeTimeout: ReturnType<typeof setTimeout> | undefined;
   let annotationCanvas = $state<HTMLCanvasElement | undefined>(undefined);
   let textEditor = $state<HTMLTextAreaElement | undefined>(undefined);
@@ -68,6 +78,9 @@
   let activeTool = $state<AnnotationTool>("select");
   let activeColor = $state("#EF4444");
   let strokeWidth = $state(5);
+  let redactMode = $state<RedactMode>("pixelate");
+  let markerPoints: PhysicalPoint[] = [];
+  let baseSource: BaseSource | null = null;
   let editingTextId = $state<string | null>(null);
   let editingText = $state("");
   let editingPoint = $state<PhysicalPoint | null>(null);
@@ -147,6 +160,8 @@
     activeTool = "select";
     activeColor = "#EF4444";
     strokeWidth = 5;
+    redactMode = "pixelate";
+    baseSource = null;
     history.reset();
     syncHistoryFlags();
     previewRect = null;
@@ -193,6 +208,14 @@
         }),
       );
       if (sequence !== loadSequence) return;
+      baseSource = createFrameBaseSource(
+        next.bounds,
+        next.monitors.flatMap((monitor) => {
+          const selector = `canvas[data-monitor-label="${CSS.escape(monitor.label)}"]`;
+          const canvas = document.querySelector<HTMLCanvasElement>(selector);
+          return canvas ? [{ ...monitor, canvas }] : [];
+        }),
+      );
       await invoke("overlay_ready", { session: next.session, timings });
       if (sequence === loadSequence) loading = false;
     } catch (error) {
@@ -245,7 +268,7 @@
         originX: session.bounds.x,
         originY: session.bounds.y,
         scale: 1 / dpr,
-      });
+      }, visibleLayers.length ? baseSource ?? undefined : undefined, selection);
       const selected = selectedLayer();
       if (selected) drawLayerHandles(ctx, selected, dpr);
       ctx.restore();
@@ -257,18 +280,19 @@
     const originY = session?.bounds.y ?? 0;
     const toCanvasX = (value: number) => (value - originX) / dpr;
     const toCanvasY = (value: number) => (value - originY) / dpr;
+    const rectLayer = isBox(layer) ? layer : isRedact(layer) ? layer : null;
     const anchors = isSegment(layer)
       ? [layer.start, layer.end]
-      : isBox(layer)
+      : rectLayer
         ? [
-            { x: layer.x, y: layer.y },
-            { x: layer.x + layer.width / 2, y: layer.y },
-            { x: layer.x + layer.width, y: layer.y },
-            { x: layer.x + layer.width, y: layer.y + layer.height / 2 },
-            { x: layer.x + layer.width, y: layer.y + layer.height },
-            { x: layer.x + layer.width / 2, y: layer.y + layer.height },
-            { x: layer.x, y: layer.y + layer.height },
-            { x: layer.x, y: layer.y + layer.height / 2 },
+            { x: rectLayer.x, y: rectLayer.y },
+            { x: rectLayer.x + rectLayer.width / 2, y: rectLayer.y },
+            { x: rectLayer.x + rectLayer.width, y: rectLayer.y },
+            { x: rectLayer.x + rectLayer.width, y: rectLayer.y + rectLayer.height / 2 },
+            { x: rectLayer.x + rectLayer.width, y: rectLayer.y + rectLayer.height },
+            { x: rectLayer.x + rectLayer.width / 2, y: rectLayer.y + rectLayer.height },
+            { x: rectLayer.x, y: rectLayer.y + rectLayer.height },
+            { x: rectLayer.x, y: rectLayer.y + rectLayer.height / 2 },
           ]
         : [];
 
@@ -282,16 +306,23 @@
     if (isSegment(layer)) {
       ctx.moveTo(toCanvasX(layer.start.x), toCanvasY(layer.start.y));
       ctx.lineTo(toCanvasX(layer.end.x), toCanvasY(layer.end.y));
-    } else if (isBox(layer)) {
+    } else if (rectLayer) {
       ctx.rect(
-        toCanvasX(layer.x),
-        toCanvasY(layer.y),
-        layer.width / dpr,
-        layer.height / dpr,
+        toCanvasX(rectLayer.x),
+        toCanvasY(rectLayer.y),
+        rectLayer.width / dpr,
+        rectLayer.height / dpr,
       );
     } else if (isText(layer)) {
       const textWidth = Math.max(12, layer.text.length * layer.fontSize * 0.65);
       ctx.rect(toCanvasX(layer.x), toCanvasY(layer.y), textWidth / dpr, layer.fontSize * 1.25 / dpr);
+    } else if (layer.type === "step") {
+      ctx.arc(toCanvasX(layer.x), toCanvasY(layer.y), layer.radius / dpr, 0, Math.PI * 2);
+    } else if (layer.type === "marker") {
+      for (const [index, point] of layer.points.entries()) {
+        if (index === 0) ctx.moveTo(toCanvasX(point.x), toCanvasY(point.y));
+        else ctx.lineTo(toCanvasX(point.x), toCanvasY(point.y));
+      }
     }
 
     ctx.stroke();
@@ -301,10 +332,25 @@
       ctx.fill();
       ctx.stroke();
     }
+    if (layer.type === "arrow") {
+      const curve = arrowCurveHandlePoint(layer);
+      ctx.beginPath();
+      ctx.arc(toCanvasX(curve.x), toCanvasY(curve.y), 4, 0, Math.PI * 2);
+      ctx.fillStyle = "#F59E0B";
+      ctx.fill();
+      ctx.stroke();
+    }
     ctx.restore();
   }
 
-  function scheduleRender() { requestAnimationFrame(drawAnnotations); }
+  function scheduleRender() {
+    if (renderScheduled) return;
+    renderScheduled = true;
+    requestAnimationFrame(() => {
+      renderScheduled = false;
+      drawAnnotations();
+    });
+  }
 
   function constrainPoint(start: PhysicalPoint, point: PhysicalPoint, shift: boolean): PhysicalPoint {
     if (!shift) return point;
@@ -367,7 +413,33 @@
         height: Math.max(1, height),
       });
     }
+    if (tool === "redact") {
+      const strengths = redactMode === "pixelate" ? [8, 14, 22] : [6, 12, 20];
+      const level = strokeWidth === 3 ? 0 : strokeWidth === 8 ? 2 : 1;
+      const strength = strengths[level] ?? 14;
+      return createLayer({
+        type: "redact", x, y, width: Math.max(1, width), height: Math.max(1, height),
+        mode: redactMode, strength,
+      });
+    }
+    if (tool === "marker") {
+      return createLayer({
+        type: "marker", color: activeColor, strokeWidth: markerWidth(), points: markerPoints,
+      });
+    }
     return null;
+  }
+
+  function markerWidth(): number {
+    if (strokeWidth === 3) return 14;
+    if (strokeWidth === 8) return 34;
+    return 22;
+  }
+
+  function stepRadius(): number {
+    if (strokeWidth === 3) return 14;
+    if (strokeWidth === 8) return 28;
+    return 20;
   }
 
   function pointerPoint(event: PointerEvent): PhysicalPoint {
@@ -388,6 +460,25 @@
     const regionHandle = handle && selection;
     if (activeTool !== "select" && !regionHandle && (!selection || !contains(selection, point))) return;
     const selected = selectedLayer();
+    const curvePoint = selected?.type === "arrow" ? arrowCurveHandlePoint(selected) : null;
+    if (activeTool === "select" && selected?.type === "arrow" && curvePoint
+      && distance(curvePoint, point) <= 9) {
+      if (event.detail >= 2) {
+        if (!selected.control) return;
+        const straight: ArrowLayer = {
+          id: selected.id, type: "arrow", color: selected.color,
+          strokeWidth: selected.strokeWidth, start: selected.start, end: selected.end,
+        };
+        commitLayers(layers.map((layer) => layer.id === selected.id ? straight : layer));
+        return;
+      }
+      gesture = {
+        pointerId: event.pointerId, mode: "curve", start: point, origin: selection,
+        layerId: selected.id, layerOrigin: $state.snapshot(selected),
+      };
+      rootElement.setPointerCapture(event.pointerId);
+      return;
+    }
     const selectedHandle = activeTool === "select" && selected && selection && contains(selection, point)
       ? annotationHandle(selected, point)
       : null;
@@ -400,13 +491,18 @@
     if (regionHandle) mode = "resize";
     else if (hit && activeTool === "select") {
       selectedLayerId = hit.id;
-      activeColor = hit.color;
-      strokeWidth = hit.strokeWidth;
+      if (hit.type !== "redact") activeColor = hit.color;
+      if (hit.type === "redact") redactMode = hit.mode;
+      strokeWidth = sizeForLayer(hit);
       const annotationResize = selectedHandle && selected?.id === hit.id
         ? selectedHandle
         : annotationHandle(hit, point);
       if (isText(hit) && event.detail >= 2) {
         beginTextEdit(hit);
+        return;
+      }
+      if (hit.type === "step" && event.detail >= 2) {
+        editStepNumber(hit);
         return;
       }
       mode = annotationResize ? "resizeLayer" : "moveLayer";
@@ -422,6 +518,18 @@
       rootElement.setPointerCapture(event.pointerId);
       scheduleRender();
       return;
+    } else if (activeTool === "step" && selection && contains(selection, point)) {
+      const number = layers.reduce(
+        (maximum, layer) => layer.type === "step" ? Math.max(maximum, layer.number) : maximum,
+        0,
+      ) + 1;
+      const created = createLayer({
+        type: "step", x: point.x, y: point.y, number, radius: stepRadius(), color: activeColor,
+      });
+      commitLayers([...layers, created]);
+      selectedLayerId = created.id;
+      event.preventDefault();
+      return;
     } else if (activeTool !== "select" && selection && contains(selection, point)) mode = "annotate";
     else if (selection && contains(selection, point)) { selectedLayerId = null; mode = "move"; }
     else { selectedLayerId = null; }
@@ -434,7 +542,36 @@
       gesture = null;
       beginTextEdit(null, point);
       event.preventDefault();
+    } else if (mode === "annotate" && activeTool === "marker") {
+      markerPoints = [point];
+      layerPreview = createLayer({
+        type: "marker", color: activeColor, strokeWidth: markerWidth(), points: markerPoints,
+      });
+      scheduleRender();
     }
+  }
+
+  function sizeForLayer(layer: Layer): number {
+    if (layer.type === "marker") return layer.strokeWidth <= 14 ? 3 : layer.strokeWidth <= 22 ? 5 : 8;
+    if (layer.type === "redact") {
+      const values = layer.mode === "pixelate" ? [8, 14, 22] : [6, 12, 20];
+      const index = values.indexOf(layer.strength);
+      return index === 0 ? 3 : index === 2 ? 8 : 5;
+    }
+    if (layer.type === "step") return layer.radius <= 14 ? 3 : layer.radius <= 20 ? 5 : 8;
+    return layer.strokeWidth;
+  }
+
+  function editStepNumber(layer: Extract<Layer, { type: "step" }>) {
+    const answer = window.prompt("Step number", String(layer.number));
+    if (answer === null) return;
+    const number = Number(answer);
+    if (!Number.isInteger(number) || number < 1) return;
+    const updated: Layer = {
+      id: layer.id, type: "step", x: layer.x, y: layer.y,
+      number, radius: layer.radius, color: layer.color,
+    };
+    commitLayers(layers.map((item) => item.id === layer.id ? updated : item));
   }
 
   function beginTextEdit(layer: Layer | null, point?: PhysicalPoint) {
@@ -460,8 +597,8 @@
       ?? (strokeWidth === 3 ? 16 : strokeWidth === 5 ? 24 : 36);
     const textLayer = createLayer({
       type: "text",
-      color: oldLayer?.color ?? activeColor,
-      strokeWidth: oldLayer?.strokeWidth ?? strokeWidth,
+      color: oldTextLayer?.color ?? activeColor,
+      strokeWidth: oldTextLayer?.strokeWidth ?? strokeWidth,
       x: point.x,
       y: point.y,
       text: value,
@@ -512,7 +649,31 @@
     } else if (currentGesture.mode === "resize" && currentGesture.origin && currentGesture.handle) {
       selection = resizeRect(currentGesture.origin, currentGesture.handle, dx, dy, session.bounds);
     } else if (currentGesture.mode === "annotate" && currentGesture.tool) {
-      layerPreview = appendLayerGesture(currentGesture.start, point, currentGesture.tool, event.shiftKey);
+      if (currentGesture.tool === "marker") {
+        const nextPoint = constrainPoint(currentGesture.start, point, event.shiftKey);
+        const previous = markerPoints[markerPoints.length - 1];
+        if (!previous || distance(previous, nextPoint) >= 1) markerPoints = [...markerPoints, nextPoint];
+        layerPreview = createLayer({
+          type: "marker", color: activeColor, strokeWidth: markerWidth(), points: markerPoints,
+        });
+      } else {
+        layerPreview = appendLayerGesture(
+          currentGesture.start, point, currentGesture.tool, event.shiftKey,
+        );
+      }
+      scheduleRender();
+    } else if (currentGesture.mode === "curve" && currentGesture.layerOrigin?.type === "arrow") {
+      const originArrow = currentGesture.layerOrigin;
+      const updated: ArrowLayer = {
+        id: originArrow.id,
+        type: "arrow",
+        color: originArrow.color,
+        strokeWidth: originArrow.strokeWidth,
+        start: originArrow.start,
+        end: originArrow.end,
+        control: curveControlForMidpoint(originArrow, point),
+      };
+      layers = layers.map((layer) => layer.id === updated.id ? updated : layer);
       scheduleRender();
     } else if ((currentGesture.mode === "moveLayer" || currentGesture.mode === "resizeLayer")
       && currentGesture.layerOrigin && currentGesture.layerId) {
@@ -536,10 +697,28 @@
         selection = clampRect(normalizeRect(currentGesture.start, point));
       }
     } else if (currentGesture.mode === "annotate" && currentGesture.tool) {
-      const created = appendLayerGesture(currentGesture.start, point, currentGesture.tool, event.shiftKey);
+      let created: Layer | null;
+      if (currentGesture.tool === "marker") {
+        const finalPoint = constrainPoint(currentGesture.start, point, event.shiftKey);
+        const lastPoint = markerPoints[markerPoints.length - 1];
+        if (!lastPoint || distance(lastPoint, finalPoint) >= 1) {
+          markerPoints = [...markerPoints, finalPoint];
+        }
+        const simplified = simplifyPoints(markerPoints);
+        created = distance(currentGesture.start, point) > 3 && simplified.length > 1
+          ? createLayer({
+              type: "marker", color: activeColor, strokeWidth: markerWidth(), points: simplified,
+            })
+          : null;
+      } else {
+        created = appendLayerGesture(
+          currentGesture.start, point, currentGesture.tool, event.shiftKey,
+        );
+      }
       if (created) { commitLayers([...layers, created]); selectedLayerId = created.id; }
       layerPreview = null;
-    } else if ((currentGesture.mode === "moveLayer" || currentGesture.mode === "resizeLayer")
+    } else if ((currentGesture.mode === "moveLayer" || currentGesture.mode === "resizeLayer"
+      || currentGesture.mode === "curve")
       && currentGesture.layerOrigin) {
       if (distance(currentGesture.start, point) > 0) {
         const previousLayer = currentGesture.layerOrigin;
@@ -559,7 +738,8 @@
       selection = null;
       previewRect = null;
     }
-    if ((currentGesture.mode === "moveLayer" || currentGesture.mode === "resizeLayer")
+    if ((currentGesture.mode === "moveLayer" || currentGesture.mode === "resizeLayer"
+      || currentGesture.mode === "curve")
       && currentGesture.layerOrigin) {
       const previousLayer = currentGesture.layerOrigin;
       layers = layers.map((layer) => layer.id === previousLayer.id ? previousLayer : layer);
@@ -567,6 +747,15 @@
     layerPreview = null;
     gesture = null;
     scheduleRender();
+  }
+
+  function simplifyPoints(points: PhysicalPoint[]): PhysicalPoint[] {
+    const simplified: PhysicalPoint[] = [];
+    for (const point of points) {
+      const previous = simplified[simplified.length - 1];
+      if (!previous || distance(previous, point) >= 2) simplified.push(point);
+    }
+    return simplified;
   }
 
   function clampRect(rect: PhysicalRect): PhysicalRect {
@@ -612,6 +801,9 @@
         r: "rect",
         e: "ellipse",
         t: "text",
+        m: "marker",
+        b: "redact",
+        n: "step",
       };
       const tool = tools[key];
       if (tool) {
@@ -672,10 +864,57 @@
     }
   }
 
-  function changeColor(color: string) { activeColor = color; if (selectedLayerId) updateSelected({ color }); }
+  function changeColor(color: string) {
+    activeColor = color;
+    const selected = selectedLayer();
+    if (selected && selected.type !== "redact") updateSelected({ color });
+  }
+
   function changeWidth(width: number) {
     strokeWidth = width;
-    if (selectedLayerId) updateSelected({ strokeWidth: width });
+    const selected = selectedLayer();
+    if (!selected) return;
+    if (selected.type === "redact") {
+      const strength = redactMode === "pixelate"
+        ? width === 3 ? 8 : width === 8 ? 22 : 14
+        : width === 3 ? 6 : width === 8 ? 20 : 12;
+      const updated: Layer = {
+        id: selected.id, type: "redact", x: selected.x, y: selected.y,
+        width: selected.width, height: selected.height, mode: selected.mode, strength,
+      };
+      commitLayers(layers.map((layer) => layer.id === selected.id ? updated : layer));
+      return;
+    }
+    if (selected.type === "step") {
+      const radius = width === 3 ? 14 : width === 8 ? 28 : 20;
+      const updated: Layer = {
+        id: selected.id, type: "step", x: selected.x, y: selected.y,
+        number: selected.number, radius, color: selected.color,
+      };
+      commitLayers(layers.map((layer) => layer.id === selected.id ? updated : layer));
+      return;
+    }
+    if (selected.type === "marker") {
+      const markerStroke = width === 3 ? 14 : width === 8 ? 34 : 22;
+      updateSelected({ strokeWidth: markerStroke });
+      return;
+    }
+    updateSelected({ strokeWidth: width });
+  }
+
+  function changeRedactMode(mode: RedactMode) {
+    redactMode = mode;
+    const selected = selectedLayer();
+    if (!isRedact(selected)) return;
+    const level = sizeForLayer(selected);
+    const strength = mode === "pixelate"
+      ? level === 3 ? 8 : level === 8 ? 22 : 14
+      : level === 3 ? 6 : level === 8 ? 20 : 12;
+    const updated: Layer = {
+      id: selected.id, type: "redact", x: selected.x, y: selected.y,
+      width: selected.width, height: selected.height, mode, strength,
+    };
+    commitLayers(layers.map((layer) => layer.id === selected.id ? updated : layer));
   }
   function updateSelected(change: { color?: string; strokeWidth?: number }) {
     const selected = selectedLayer();
@@ -688,6 +927,13 @@
     layer: Layer,
     change: { color?: string; strokeWidth?: number },
   ): Layer {
+    if (layer.type === "redact") return layer;
+    if (layer.type === "step") {
+      return {
+        id: layer.id, type: "step", x: layer.x, y: layer.y, number: layer.number,
+        radius: layer.radius, color: change.color ?? layer.color,
+      };
+    }
     const color = change.color ?? layer.color;
     const nextWidth = change.strokeWidth ?? layer.strokeWidth;
     switch (layer.type) {
@@ -699,6 +945,7 @@
           strokeWidth: nextWidth,
           start: layer.start,
           end: layer.end,
+          control: layer.control,
         };
       case "line":
         return {
@@ -741,6 +988,11 @@
           y: layer.y,
           text: layer.text,
           fontSize: change.strokeWidth === undefined ? layer.fontSize : fontSizeForWidth(nextWidth),
+        };
+      case "marker":
+        return {
+          id: layer.id, type: "marker", color, strokeWidth: nextWidth,
+          points: layer.points,
         };
     }
   }
@@ -807,7 +1059,7 @@
       originX: rect.x,
       originY: rect.y,
       scale: 1,
-    });
+    }, baseSource ?? undefined, rect);
     const pixels = ctx.getImageData(0, 0, rect.width, rect.height).data;
     return new Uint8Array(pixels.buffer);
   }
@@ -875,6 +1127,7 @@
         selection = null;
         layers = [];
         selectedLayerId = null;
+        baseSource = null;
         layerPreview = null;
         editingPoint = null;
         editingTextId = null;
@@ -969,6 +1222,8 @@
       tool={activeTool}
       color={activeColor}
       strokeWidth={strokeWidth}
+      {redactMode}
+      showRedactMode={activeTool === "redact" || isRedact(selectedLayer())}
       {canUndo}
       {canRedo}
       {busy}
@@ -976,6 +1231,7 @@
       onTool={(tool) => activeTool = tool}
       onColor={changeColor}
       onWidth={changeWidth}
+      onRedactMode={changeRedactMode}
       onUndo={undo}
       onRedo={redo}
       onCopy={() => runAction("copy_selection")}

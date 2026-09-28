@@ -1,10 +1,12 @@
 <script lang="ts">
-  import type { AnnotationTool } from "$lib/annotations/model";
+  import type { AnnotationTool, RedactMode } from "$lib/annotations/model";
   let {
     position,
     tool,
     color,
     strokeWidth,
+    redactMode,
+    showRedactMode,
     canUndo,
     canRedo,
     busy,
@@ -12,6 +14,7 @@
     onTool,
     onColor,
     onWidth,
+    onRedactMode,
     onUndo,
     onRedo,
     onCopy,
@@ -22,6 +25,8 @@
     tool: AnnotationTool;
     color: string;
     strokeWidth: number;
+    redactMode: RedactMode;
+    showRedactMode: boolean;
     canUndo: boolean;
     canRedo: boolean;
     busy: boolean;
@@ -29,6 +34,7 @@
     onTool: (tool: AnnotationTool) => void;
     onColor: (color: string) => void;
     onWidth: (width: number) => void;
+    onRedactMode: (mode: RedactMode) => void;
     onUndo: () => void;
     onRedo: () => void;
     onCopy: () => void;
@@ -44,14 +50,37 @@
     { id: "rect", title: "Rectangle (R)", path: "M4 5h12v10H4z" },
     { id: "ellipse", title: "Ellipse (E)", path: "M10 4a6 5 0 1 0 0 10 6 5 0 1 0 0-10Z" },
     { id: "text", title: "Text (T)", path: "M4 5h12M10 5v11m-3 0h6" },
+    { id: "marker", title: "Marker (M)", path: "M4 15 14 5l2 2L6 17H4zM11 8l2 2" },
+    { id: "redact", title: "Redact (B)", path: "M4 4h12v12H4zM7 7l6 6m0-6-6 6" },
+    {
+      id: "step",
+      title: "Step (N)",
+      path: "M10 3a7 7 0 1 0 0 14 7 7 0 1 0 0-14ZM10 6v8m-2-6 2-2",
+    },
   ];
 </script>
 
-<div class="toolbar" role="toolbar" aria-label="Annotation tools" tabindex="-1" class:working={busy} style={`left:${position.x}px;top:${position.y}px;width:${position.width}px;height:${position.height}px`} onpointerdown={(event) => event.stopPropagation()} onpointerup={(event) => event.stopPropagation()}>
+<div
+  class="toolbar"
+  role="toolbar"
+  aria-label="Annotation tools"
+  tabindex="-1"
+  class:working={busy}
+  style={`left:${position.x}px;top:${position.y}px;width:${position.width}px;height:${position.height}px`}
+  onpointerdown={(event) => event.stopPropagation()}
+  onpointerup={(event) => event.stopPropagation()}
+>
   {#if notice}<div class="notice" role="status">{notice}</div>{/if}
   <div class="group tools">
     {#each tools as item (item.id)}
-      <button class:active={tool === item.id} class="tool" title={item.title} aria-label={item.title} aria-pressed={tool === item.id} onclick={() => onTool(item.id)}>
+      <button
+        class:active={tool === item.id}
+        class="tool"
+        title={item.title}
+        aria-label={item.title}
+        aria-pressed={tool === item.id}
+        onclick={() => onTool(item.id)}
+      >
         <svg viewBox="0 0 20 20" aria-hidden="true"><path d={item.path} /></svg>
       </button>
     {/each}
@@ -59,29 +88,85 @@
   <span class="divider"></span>
   <div class="group properties">
     <div class="color-wrap">
-      <button class="color-button" title="Annotation color" aria-label="Choose annotation color" onclick={() => paletteOpen = !paletteOpen}><span class="swatch" style={`background:${color}`}></span><svg viewBox="0 0 12 12"><path d="m3 4 3 3 3-3" /></svg></button>
+      <button
+        class="color-button"
+        title="Annotation color"
+        aria-label="Choose annotation color"
+        onclick={() => paletteOpen = !paletteOpen}
+      >
+        <span class="swatch" style={`background:${color}`}></span>
+        <svg viewBox="0 0 12 12"><path d="m3 4 3 3 3-3" /></svg>
+      </button>
       {#if paletteOpen}
-        <div class="palette" role="group" aria-label="Annotation colors" onpointerdown={(event) => event.stopPropagation()}>
-          {#each colors as value (value)}<button class:selected={value === color} class="palette-swatch" style={`--swatch:${value}`} title={value} aria-label={value} onclick={() => { onColor(value); paletteOpen = false; }}></button>{/each}
+        <div
+          class="palette"
+          role="group"
+          aria-label="Annotation colors"
+          onpointerdown={(event) => event.stopPropagation()}
+        >
+          {#each colors as value (value)}
+            <button
+              class:selected={value === color}
+              class="palette-swatch"
+              style={`--swatch:${value}`}
+              title={value}
+              aria-label={value}
+              onclick={() => { onColor(value); paletteOpen = false; }}
+            ></button>
+          {/each}
         </div>
       {/if}
     </div>
     <div class="sizes" aria-label="Stroke width">
-      {#each [{ label: "S", value: 3 }, { label: "M", value: 5 }, { label: "L", value: 8 }] as size (size.value)}
-        <button class:selected={strokeWidth === size.value} title={`Size ${size.label}`} aria-pressed={strokeWidth === size.value} onclick={() => onWidth(size.value)}>{size.label}</button>
+      {#each [
+        { label: "S", value: 3 },
+        { label: "M", value: 5 },
+        { label: "L", value: 8 },
+      ] as size (size.value)}
+        <button
+          class:selected={strokeWidth === size.value}
+          title={`Size ${size.label}`}
+          aria-pressed={strokeWidth === size.value}
+          onclick={() => onWidth(size.value)}
+        >{size.label}</button>
       {/each}
     </div>
+    {#if showRedactMode}
+      <div class="group redact-modes" aria-label="Redaction mode">
+        <button
+          class:chosen={redactMode === "pixelate"}
+          onclick={() => onRedactMode("pixelate")}
+        >Pixelate</button>
+        <button class:chosen={redactMode === "blur"} onclick={() => onRedactMode("blur")}>Blur</button>
+      </div>
+    {/if}
   </div>
   <span class="divider"></span>
   <div class="group">
-    <button class="tool" title="Undo (Ctrl+Z)" aria-label="Undo" disabled={!canUndo} onclick={onUndo}><svg viewBox="0 0 20 20"><path d="M7 6 3.5 9.5 7 13M4 9.5h7a5 5 0 0 1 5 5" /></svg></button>
-    <button class="tool" title="Redo (Ctrl+Y)" aria-label="Redo" disabled={!canRedo} onclick={onRedo}><svg viewBox="0 0 20 20"><path d="m13 6 3.5 3.5L13 13m3-3.5h-7a5 5 0 0 0-5 5" /></svg></button>
+    <button class="tool" title="Undo (Ctrl+Z)" aria-label="Undo" disabled={!canUndo} onclick={onUndo}>
+      <svg viewBox="0 0 20 20"><path d="M7 6 3.5 9.5 7 13M4 9.5h7a5 5 0 0 1 5 5" /></svg>
+    </button>
+    <button class="tool" title="Redo (Ctrl+Y)" aria-label="Redo" disabled={!canRedo} onclick={onRedo}>
+      <svg viewBox="0 0 20 20"><path d="m13 6 3.5 3.5L13 13m3-3.5h-7a5 5 0 0 0-5 5" /></svg>
+    </button>
   </div>
   <span class="divider"></span>
   <div class="group actions">
-    <button class="action copy" title="Copy (Ctrl+C / Enter)" disabled={busy} onclick={onCopy}><svg viewBox="0 0 20 20"><rect x="7" y="7" width="9" height="10" rx="1.5"/><path d="M12 4H5.5A1.5 1.5 0 0 0 4 5.5V13"/></svg><span>Copy</span></button>
-    <button class="action" title="Save (Ctrl+S)" disabled={busy} onclick={onSave}><svg viewBox="0 0 20 20"><path d="M4 3.5h10l2 2V16a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1zM7 3.5v5h6v-5M7 17v-5h6v5"/></svg></button>
-    <button class="action close" title="Close (Esc)" disabled={busy} onclick={onClose}><svg viewBox="0 0 20 20"><path d="m5 5 10 10M15 5 5 15"/></svg></button>
+    <button class="action copy" title="Copy (Ctrl+C / Enter)" disabled={busy} onclick={onCopy}>
+      <svg viewBox="0 0 20 20">
+        <rect x="7" y="7" width="9" height="10" rx="1.5" />
+        <path d="M12 4H5.5A1.5 1.5 0 0 0 4 5.5V13" />
+      </svg>
+      <span>Copy</span>
+    </button>
+    <button class="action" title="Save (Ctrl+S)" disabled={busy} onclick={onSave}>
+      <svg viewBox="0 0 20 20">
+        <path d="M4 3.5h10l2 2V16a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1zM7 3.5v5h6v-5M7 17v-5h6v5" />
+      </svg>
+    </button>
+    <button class="action close" title="Close (Esc)" disabled={busy} onclick={onClose}>
+      <svg viewBox="0 0 20 20"><path d="m5 5 10 10M15 5 5 15" /></svg>
+    </button>
   </div>
 </div>
 
@@ -221,6 +306,23 @@
     font: 600 11px var(--font-sans);
   }
   .sizes button.selected {
+    background: rgba(99,102,241,.34);
+    color: white;
+  }
+  .redact-modes {
+    gap: 2px;
+    padding: 2px;
+    border-radius: 7px;
+    background: rgba(255,255,255,.07);
+  }
+  .redact-modes button {
+    height: 27px;
+    padding: 0 7px;
+    border-radius: 5px;
+    background: transparent;
+    font: 600 10px var(--font-sans);
+  }
+  .redact-modes button.chosen {
     background: rgba(99,102,241,.34);
     color: white;
   }

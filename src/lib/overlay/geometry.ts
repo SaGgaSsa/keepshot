@@ -58,7 +58,10 @@ export function monitorUnderPoint(
   );
 }
 
-export function nearestMonitor(point: PhysicalPoint, monitors: MonitorGeometry[]): MonitorGeometry | undefined {
+export function nearestMonitor(
+  point: PhysicalPoint,
+  monitors: MonitorGeometry[],
+): MonitorGeometry | undefined {
   return monitors.reduce<MonitorGeometry | undefined>((nearest, monitor) => {
     if (!nearest) return monitor;
     const distance = distanceToMonitor(point, monitor);
@@ -75,10 +78,11 @@ export function actionBarPosition(
 ): PhysicalPoint & { width: number; height: number } {
   const corner = { x: rect.x + rect.width - 1, y: rect.y + rect.height - 1 };
   const monitor = monitorUnderPoint(corner, monitors) ?? nearestMonitor(corner, monitors);
-  if (!monitor) return { x: 8, y: 8, width: 640, height: 52 };
+  if (!monitor) return { x: 8, y: 8, width: 960, height: 104 };
 
-  const barWidth = Math.min(640 * devicePixelRatio, monitor.width);
-  const barHeight = Math.min((monitor.width < 640 * devicePixelRatio ? 104 : 52) * devicePixelRatio, monitor.height);
+  const barWidth = Math.min(960 * devicePixelRatio, monitor.width);
+  const requestedHeight = monitor.width < 960 * devicePixelRatio ? 104 : 52;
+  const barHeight = Math.min(requestedHeight * devicePixelRatio, monitor.height);
   const gap = 12 * devicePixelRatio;
   let x = rect.x + rect.width - barWidth;
   let y = rect.y + rect.height + gap;
