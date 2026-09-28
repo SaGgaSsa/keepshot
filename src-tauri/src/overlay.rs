@@ -67,7 +67,7 @@ pub fn create_history_window(app: &AppHandle) -> Result<WebviewWindow, String> {
         if matches!(event, WindowEvent::Focused(false)) {
             if let Some(window) = app.get_webview_window("history") {
                 if let Err(error) = window.hide() {
-                    eprintln!("Could not hide history panel after focus loss: {error}");
+                    crate::log_error!("Could not hide history panel after focus loss: {error}");
                 }
             }
         }
@@ -85,10 +85,10 @@ pub fn toggle_history(app: &AppHandle) -> Result<(), String> {
     position_history(&window, app)?;
     window.show().map_err(|error| error.to_string())?;
     if let Err(error) = window.set_focus() {
-        eprintln!("Could not focus history panel: {error}");
+        crate::log_error!("Could not focus history panel: {error}");
     }
     if let Err(error) = window.emit("history:shown", ()) {
-        eprintln!("Could not notify history panel that it was shown: {error}");
+        crate::log_error!("Could not notify history panel that it was shown: {error}");
     }
     Ok(())
 }
@@ -168,7 +168,7 @@ fn position_window(window: &WebviewWindow, bounds: VirtualBounds) -> Result<(), 
     let actual_position = window.outer_position().map_err(|error| error.to_string())?;
     let actual_size = window.outer_size().map_err(|error| error.to_string())?;
     if actual_position != position || actual_size != size {
-        eprintln!(
+        crate::log_error!(
             "Overlay geometry mismatch: wanted ({}, {}) {}x{}, got ({}, {}) {}x{}",
             bounds.x,
             bounds.y,

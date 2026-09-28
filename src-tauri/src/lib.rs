@@ -1,3 +1,5 @@
+#[macro_use]
+mod applog;
 mod capture;
 mod frames;
 mod history;
@@ -106,13 +108,14 @@ pub fn run() {
                         start_capture(app.clone());
                     } else if history.as_ref() == Some(shortcut) {
                         if let Err(error) = overlay::toggle_history(app) {
-                            eprintln!("Could not toggle history panel: {error}");
+                            crate::log_error!("Could not toggle history panel: {error}");
                         }
                     }
                 })
                 .build(),
         )
         .invoke_handler(tauri::generate_handler![
+            log_client_error,
             overlay_ready,
             pending_frame,
             close_overlays,
@@ -137,9 +140,10 @@ pub fn run() {
             complete_onboarding
         ])
         .setup(|app| {
+            applog::init(app.handle());
             initialize_settings(app.handle());
             if let Err(error) = tray::build(app.handle(), start_capture) {
-                eprintln!("Could not initialize system tray: {error}");
+                crate::log_error!("Could not initialize system tray: {error}");
             }
             if let Some(window) = app.get_webview_window("main") {
                 if platform::supports_mica() {
@@ -160,7 +164,9 @@ pub fn run() {
                                 *material = "mica".to_string();
                             }
                         }
-                        Err(error) => eprintln!("Could not enable Mica for Settings: {error}"),
+                        Err(error) => {
+                            crate::log_error!("Could not enable Mica for Settings: {error}")
+                        }
                     }
                 }
                 let settings_window = window.clone();
@@ -169,10 +175,10 @@ pub fn run() {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                         api.prevent_close();
                         if let Err(error) = set_shortcuts_suspended(&settings_app, false) {
-                            eprintln!("Could not resume shortcuts: {error}");
+                            crate::log_error!("Could not resume shortcuts: {error}");
                         }
                         if let Err(error) = settings_window.hide() {
-                            eprintln!("Could not hide settings window: {error}");
+                            crate::log_error!("Could not hide settings window: {error}");
                         }
                     }
                 });
@@ -190,25 +196,31 @@ pub fn run() {
             match app.path().app_local_data_dir() {
                 Ok(root) => {
                     if let Err(error) = history::prepare(&root.join("history")) {
-                        eprintln!("Could not prepare history folder: {error}");
+                        crate::log_error!("Could not prepare history folder: {error}");
                     }
                 }
-                Err(error) => eprintln!("Could not resolve history folder: {error}"),
+                Err(error) => crate::log_error!("Could not resolve history folder: {error}"),
             }
             if let Err(error) = overlay::create_history_window(app.handle()) {
-                eprintln!("Could not pre-create history panel: {error}");
+                crate::log_error!("Could not pre-create history panel: {error}");
             }
             match capture::monitor_infos().and_then(|monitors| {
                 let bounds = capture::virtual_bounds(&monitors)?;
                 overlay::reconcile(app.handle(), &monitors, bounds).map(|_| ())
             }) {
                 Ok(()) => {}
-                Err(error) => eprintln!("Failed to initialize capture overlays: {error}"),
+                Err(error) => crate::log_error!("Failed to initialize capture overlays: {error}"),
             }
             Ok(())
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// Errors shown to the user in a webview are forwarded here so they also reach the log file.
+#[tauri::command]
+fn log_client_error(source: String, message: String) {
+    log_error!("[{source}] {message}");
 }
 
 #[tauri::command]
@@ -232,13 +244,13 @@ fn overlay_ready(
         .map_err(|error| format!("Could not show capture overlay: {error}"))?;
     if !matches!(state.pending(), Some(current) if current.session == session) {
         if let Err(error) = window.hide() {
-            eprintln!("Could not hide stale capture overlay: {error}");
+            crate::log_error!("Could not hide stale capture overlay: {error}");
         }
         return Ok(());
     }
     let shown_ms = state.elapsed_ms()?;
     if let Err(error) = window.set_focus() {
-        eprintln!("Could not focus capture overlay: {error}");
+        crate::log_error!("Could not focus capture overlay: {error}");
     }
     let Some(metrics) = state.mark_ready(&session, timings, shown_ms)? else {
         return Ok(());
@@ -248,7 +260,7 @@ fn overlay_ready(
         serde_json::to_string(&metrics).unwrap_or_default()
     );
     if let Err(error) = app.emit_to("main", "capture:metrics", metrics) {
-        eprintln!("Failed to emit capture metrics: {error}");
+        crate::log_error!("Failed to emit capture metrics: {error}");
     }
     Ok(())
 }
@@ -348,7 +360,7 @@ fn start_history_record(
     let root = match app.path().app_local_data_dir() {
         Ok(path) => path.join("history"),
         Err(error) => {
-            eprintln!("Could not resolve history folder: {error}");
+            crate::log_error!("Could not resolve history folder: {error}");
             return;
         }
     };
@@ -385,7 +397,7 @@ fn start_history_record(
             )
         })();
         if let Err(error) = result {
-            eprintln!("Could not record capture history: {error}");
+            crate::log_error!("Could not record capture history: {error}");
         }
     });
 }
@@ -492,7 +504,7 @@ fn set_shortcut(
         if let Err(error) = manager.register(parsed) {
             if let Ok(old) = settings::shortcut(&old_value) {
                 if let Err(restore_error) = manager.register(old) {
-                    eprintln!("Could not restore previous shortcut: {restore_error}");
+                    crate::log_error!("Could not restore previous shortcut: {restore_error}");
                 } else {
                     let state = app.state::<settings::SettingsState>();
                     set_shortcut_slot(&state, slot, Some(old));
@@ -530,7 +542,7 @@ fn set_shortcut(
         errors.retain(|error| !error.starts_with(slot));
     }
     if let Err(error) = tray::update_menu(&app) {
-        eprintln!("Could not refresh tray menu: {error}");
+        crate::log_error!("Could not refresh tray menu: {error}");
     }
     Ok(current)
 }
@@ -675,7 +687,7 @@ fn initialize_settings(app: &tauri::AppHandle) {
     let initial = match settings::load(app) {
         Ok(value) => value,
         Err(error) => {
-            eprintln!("Could not load settings; defaults will be used: {error}");
+            crate::log_error!("Could not load settings; defaults will be used: {error}");
             settings::Settings::default()
         }
     };
@@ -853,10 +865,12 @@ fn close_overlay_session_for(
 fn notify_overlay_closed(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("overlay") {
         if let Err(error) = window.emit("overlay:clear", ()) {
-            eprintln!("Failed to notify capture overlay that its frame was cleared: {error}");
+            crate::log_error!(
+                "Failed to notify capture overlay that its frame was cleared: {error}"
+            );
         }
         if let Err(error) = window.hide() {
-            eprintln!("Failed to hide capture overlay: {error}");
+            crate::log_error!("Failed to hide capture overlay: {error}");
         }
     }
 }
@@ -884,12 +898,12 @@ fn start_capture(app: tauri::AppHandle) {
         match result {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
-                eprintln!("Capture failed: {error}");
+                crate::log_error!("Capture failed: {error}");
                 let _ = app.state::<frames::FrameStore>().clear();
                 hide_all_overlays(&app);
             }
             Err(error) => {
-                eprintln!("Capture task failed: {error}");
+                crate::log_error!("Capture task failed: {error}");
                 let _ = app.state::<frames::FrameStore>().clear();
                 hide_all_overlays(&app);
             }
@@ -918,10 +932,10 @@ fn capture_session(app: tauri::AppHandle, started: Instant) -> Result<(), String
         .pending()
         .ok_or_else(|| "Captured frame session was not available".to_string())?;
     if let Err(error) = store.set_emit_time() {
-        eprintln!("Could not record overlay event time: {error}");
+        crate::log_error!("Could not record overlay event time: {error}");
     }
     if let Err(error) = app.emit_to("overlay", "overlay:frame", payload) {
-        eprintln!("Failed to notify capture overlay about the new session: {error}");
+        crate::log_error!("Failed to notify capture overlay about the new session: {error}");
     }
     Ok(())
 }
@@ -934,10 +948,10 @@ fn any_overlay_visible(app: &tauri::AppHandle) -> bool {
 fn hide_all_overlays(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("overlay") {
         if let Err(error) = window.emit("overlay:clear", ()) {
-            eprintln!("Failed to clear capture overlay contents: {error}");
+            crate::log_error!("Failed to clear capture overlay contents: {error}");
         }
         if let Err(error) = window.hide() {
-            eprintln!("Failed to hide capture overlay: {error}");
+            crate::log_error!("Failed to hide capture overlay: {error}");
         }
     }
 }

@@ -1,4 +1,5 @@
 ﻿<script lang="ts">
+  import { reportError } from "$lib/reportError";
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
   import Diagnostics from "$lib/settings/Diagnostics.svelte";
@@ -131,7 +132,7 @@
   }
 
   function message(cause: unknown): string {
-    return cause instanceof Error ? cause.message : String(cause);
+    return reportError("settings", cause);
   }
 
   function shortPath(path: string): string {

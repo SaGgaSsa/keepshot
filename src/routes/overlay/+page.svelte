@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { reportError } from "$lib/reportError";
   import { onMount, tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -196,7 +197,7 @@
       if (sequence !== loadSequence) return;
       console.error("Could not prepare capture frames", error);
       loading = false;
-      showNotice(String(error));
+      showNotice(reportError("overlay", error));
     }
   }
 
@@ -693,7 +694,7 @@
       const point = await invoke<PhysicalPoint>("cursor_position");
       selection = fullMonitorRect(point, session.monitors, session.bounds);
     } catch (error) {
-      showNotice(String(error));
+      showNotice(reportError("overlay", error));
     }
   }
 
@@ -711,7 +712,7 @@
         editSession?.historyId ?? null,
       );
     } catch (error) {
-      if (session?.session === actionSession) showNotice(String(error));
+      if (session?.session === actionSession) showNotice(reportError("overlay", error));
     } finally {
       if (session?.session === actionSession) busy = false;
     }
@@ -721,7 +722,7 @@
     try {
       await invoke("close_overlays");
     } catch (error) {
-      showNotice(String(error));
+      showNotice(reportError("overlay", error));
     }
   }
 
@@ -771,7 +772,7 @@
       }
       const pending = await invoke<OverlaySession | null>("pending_frame");
       if (pending) receiveFrames(pending);
-    })().catch((error) => showNotice(String(error)));
+    })().catch((error) => showNotice(reportError("overlay", error)));
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("resize", scheduleRender);
     return () => {

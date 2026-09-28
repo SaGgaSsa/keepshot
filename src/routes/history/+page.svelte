@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { reportError } from "$lib/reportError";
   import { onMount, tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -27,7 +28,7 @@
       errorMessage = "";
       if (animate) restartEntrance();
     } catch (error) {
-      errorMessage = String(error);
+      errorMessage = reportError("history", error);
     }
   }
 
@@ -64,7 +65,7 @@
       await invoke("history_copy", { id: item.id });
       if (closeAfter) await invoke("history_close");
     } catch (error) {
-      errorMessage = String(error);
+      errorMessage = reportError("history", error);
     }
   }
 
@@ -73,7 +74,7 @@
       await invoke<string>("history_save", { id: item.id });
       errorMessage = "";
     } catch (error) {
-      errorMessage = String(error);
+      errorMessage = reportError("history", error);
     }
   }
 
@@ -81,7 +82,7 @@
     try {
       await invoke("history_edit", { id: item.id });
     } catch (error) {
-      errorMessage = String(error);
+      errorMessage = reportError("history", error);
     }
   }
 
@@ -90,7 +91,7 @@
       await invoke("history_delete", { id: item.id });
       await refresh();
     } catch (error) {
-      errorMessage = String(error);
+      errorMessage = reportError("history", error);
     }
   }
 

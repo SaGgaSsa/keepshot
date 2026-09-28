@@ -111,7 +111,7 @@ pub fn register_startup_shortcuts(app: &AppHandle) {
     let current = match snapshot(app) {
         Ok(settings) => settings,
         Err(error) => {
-            eprintln!("Could not read settings: {error}");
+            crate::log_error!("Could not read settings: {error}");
             return;
         }
     };
@@ -140,7 +140,7 @@ pub fn register_startup_shortcuts(app: &AppHandle) {
                 }
             }
             Err(error) => {
-                eprintln!("Could not register {name} shortcut: {error}");
+                crate::log_error!("Could not register {name} shortcut: {error}");
                 errors.push(format!("{name}: {error}"));
             }
         }

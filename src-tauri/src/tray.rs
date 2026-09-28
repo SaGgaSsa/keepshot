@@ -38,7 +38,7 @@ pub fn build(app: &AppHandle, start_capture: fn(AppHandle)) -> Result<(), String
             "capture" => start_capture(app.clone()),
             "history" => {
                 if let Err(error) = overlay::toggle_history(app) {
-                    eprintln!("Could not toggle history panel: {error}");
+                    crate::log_error!("Could not toggle history panel: {error}");
                 }
             }
             "settings" => show_settings(app),
@@ -62,10 +62,10 @@ pub fn update_menu(app: &AppHandle) -> Result<(), String> {
 pub fn show_settings(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         if let Err(error) = window.show() {
-            eprintln!("Could not show settings window: {error}");
+            crate::log_error!("Could not show settings window: {error}");
         }
         if let Err(error) = window.set_focus() {
-            eprintln!("Could not focus settings window: {error}");
+            crate::log_error!("Could not focus settings window: {error}");
         }
     }
 }
