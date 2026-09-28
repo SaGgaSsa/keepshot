@@ -3,17 +3,15 @@
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
   import Toolbar from "$lib/overlay/Toolbar.svelte";
+  import SelectionFrame from "$lib/overlay/SelectionFrame.svelte";
   import {
     annotationHandle,
     arrowCurveHandlePoint,
     createLayer,
     curveControlForMidpoint,
     hitTest,
-    isBox,
     isRedact,
-    isSegment,
     isText,
-    layerBounds,
     moveLayer,
     resizeLayer,
     type AnnotationTool,
@@ -22,33 +20,47 @@
     type RedactMode,
     type ResizeHandle,
   } from "$lib/annotations/model";
+  import { createFrameBaseSource, type BaseSource } from "$lib/annotations/render";
   import {
-    createFrameBaseSource,
-    renderLayers,
-    type BaseSource,
-  } from "$lib/annotations/render";
+    createBrushLayer,
+    createShapeLayer,
+    fontSizeForWidth,
+    markerWidth,
+    nextStepNumber,
+    redactWidth,
+    sizeForLayer,
+    simplifyPoints,
+    stepRadius,
+    updateBrushPoints,
+    updateLayerStyle,
+  } from "$lib/annotations/gestures";
+  import {
+    createRenderScheduler,
+    drawAnnotations as renderLiveAnnotations,
+  } from "$lib/annotations/liveRender";
   import { LayerHistory } from "$lib/annotations/history";
   import {
     actionBarPosition,
     clamp,
     cssPointToPhysical,
-    monitorUnderPoint,
-    nearestMonitor,
     normalizeRect,
     physicalPointToCss,
     physicalToCss,
     type MonitorGeometry,
     type PhysicalPoint,
     type PhysicalRect,
-    type VirtualBounds,
   } from "$lib/overlay/geometry";
-
-  type OverlaySession = {
-    session: string;
-    bounds: VirtualBounds;
-    monitors: MonitorGeometry[];
-  };
-  type ImageTiming = { label: string; loadMs: number; paintMs: number };
+  import {
+    clampRect,
+    contains,
+    distance,
+    fullMonitorRect,
+    REGION_HANDLES as handleNames,
+    resizeRect,
+  } from "$lib/overlay/regionSelection";
+  import { loadFrames, type OverlaySession } from "$lib/overlay/session";
+  import { invokeSelectionAction } from "$lib/overlay/exporter";
+  import { handleOverlayKeyDown } from "$lib/overlay/keyboard";
   type Gesture = {
     pointerId: number;
     mode: "draw" | "move" | "resize" | "annotate" | "moveLayer" | "resizeLayer" | "curve";
@@ -60,7 +72,6 @@
     tool?: AnnotationTool;
   };
 
-  const handleNames = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
   let session = $state<OverlaySession | null>(null);
   let selection = $state<PhysicalRect | null>(null);
   let previewRect = $state<PhysicalRect | null>(null);
@@ -70,7 +81,6 @@
   let notice = $state("");
   let rootElement: HTMLElement;
   let loadSequence = 0;
-  let renderScheduled = false;
   let noticeTimeout: ReturnType<typeof setTimeout> | undefined;
   let annotationCanvas = $state<HTMLCanvasElement | undefined>(undefined);
   let textEditor = $state<HTMLTextAreaElement | undefined>(undefined);
@@ -109,23 +119,6 @@
     return `M0 0 H${width} V${height} H0 Z M${left} ${top} H${right} V${bottom} H${left} Z`;
   });
 
-  // WebView2 custom-protocol throughput is per request, so frames are fetched as parallel row bands.
-  const FRAME_BAND_BYTES = 2 * 1024 * 1024;
-
-  function frameBands(monitor: MonitorGeometry): [number, number][] {
-    const rowsPerBand = Math.max(1, Math.floor(FRAME_BAND_BYTES / (monitor.width * 4)));
-    const bands: [number, number][] = [];
-    for (let start = 0; start < monitor.height; start += rowsPerBand) {
-      bands.push([start, Math.min(monitor.height, start + rowsPerBand)]);
-    }
-    return bands;
-  }
-
-  function frameUrl(monitor: MonitorGeometry, startRow: number, endRow: number): string {
-    if (!session) return "";
-    const query = `s=${encodeURIComponent(session.session)}&y0=${startRow}&y1=${endRow}`;
-    return `http://frame.localhost/${encodeURIComponent(monitor.label)}?${query}`;
-  }
 
   function monitorStyle(monitor: MonitorGeometry): string {
     if (!session) return "";
@@ -174,51 +167,17 @@
   async function waitForFrames(next: OverlaySession, sequence: number, arrivedAt: number) {
     await tick();
     try {
-      const timings = await Promise.all(
-        next.monitors.map(async (monitor): Promise<ImageTiming> => {
-          const selector = `canvas[data-monitor-label="${CSS.escape(monitor.label)}"]`;
-          const canvas = document.querySelector<HTMLCanvasElement>(selector);
-          if (!canvas) throw new Error(`Frame canvas for ${monitor.label} was not mounted`);
-          // Frames arrive as raw opaque RGBA, so painting skips image decoding entirely.
-          const context = canvas.getContext("2d", { alpha: false });
-          if (!context) throw new Error(`Canvas 2D is unavailable for ${monitor.label}`);
-          let loadedAt = arrivedAt;
-          await Promise.all(
-            frameBands(monitor).map(async ([startRow, endRow]) => {
-              const response = await fetch(frameUrl(monitor, startRow, endRow));
-              if (!response.ok) throw new Error(`Frame load failed for ${monitor.label}`);
-              const buffer = await response.arrayBuffer();
-              loadedAt = Math.max(loadedAt, performance.now());
-              if (sequence !== loadSequence) throw new Error("Stale capture session");
-              const rows = endRow - startRow;
-              if (buffer.byteLength !== monitor.width * rows * 4) {
-                throw new Error(`Frame band for ${monitor.label} has an unexpected size`);
-              }
-              const imageData = new ImageData(
-                new Uint8ClampedArray(buffer),
-                monitor.width,
-                rows,
-              );
-              context.putImageData(imageData, 0, startRow);
-            }),
-          );
-          return {
-            label: monitor.label,
-            loadMs: loadedAt - arrivedAt,
-            paintMs: performance.now() - arrivedAt,
-          };
-        }),
-      );
+      const loaded = await loadFrames(next, arrivedAt, {
+        findCanvas: (label) => document.querySelector<HTMLCanvasElement>(
+          `canvas[data-monitor-label="${CSS.escape(label)}"]`,
+        ),
+        isCurrent: () => sequence === loadSequence,
+        now: () => performance.now(),
+        fetchFrame: (url) => fetch(url),
+      });
       if (sequence !== loadSequence) return;
-      baseSource = createFrameBaseSource(
-        next.bounds,
-        next.monitors.flatMap((monitor) => {
-          const selector = `canvas[data-monitor-label="${CSS.escape(monitor.label)}"]`;
-          const canvas = document.querySelector<HTMLCanvasElement>(selector);
-          return canvas ? [{ ...monitor, canvas }] : [];
-        }),
-      );
-      await invoke("overlay_ready", { session: next.session, timings });
+      baseSource = createFrameBaseSource(next.bounds, loaded.frames);
+      await invoke("overlay_ready", { session: next.session, timings: loaded.timings });
       if (sequence === loadSequence) loading = false;
     } catch (error) {
       if (sequence !== loadSequence) return;
@@ -246,130 +205,18 @@
   function selectedLayer(): Layer | undefined { return layers.find((layer) => layer.id === selectedLayerId); }
 
   function drawAnnotations() {
-    if (!annotationCanvas || !session) return;
-    const dpr = window.devicePixelRatio || 1;
-    const width = Math.max(1, Math.round(window.innerWidth * dpr));
-    const height = Math.max(1, Math.round(window.innerHeight * dpr));
-    if (annotationCanvas.width !== width || annotationCanvas.height !== height) {
-      annotationCanvas.width = width;
-      annotationCanvas.height = height;
-    }
-    const ctx = annotationCanvas.getContext("2d");
-    if (!ctx) return;
-    ctx.clearRect(0, 0, width, height);
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    if (selection) {
-      const left = (selection.x - session.bounds.x) / dpr;
-      const top = (selection.y - session.bounds.y) / dpr;
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(left, top, selection.width / dpr, selection.height / dpr);
-      ctx.clip();
-      const visibleLayers = layerPreview ? [...layers, layerPreview] : layers;
-      renderLayers(ctx, visibleLayers, {
-        originX: session.bounds.x,
-        originY: session.bounds.y,
-        scale: 1 / dpr,
-      }, visibleLayers.length ? baseSource ?? undefined : undefined, selection);
-      const selected = selectedLayer();
-      if (selected) drawLayerHandles(ctx, selected, dpr);
-      ctx.restore();
-    }
-  }
-
-  function drawLayerHandles(ctx: CanvasRenderingContext2D, layer: Layer, dpr: number) {
-    const originX = session?.bounds.x ?? 0;
-    const originY = session?.bounds.y ?? 0;
-    const toCanvasX = (value: number) => (value - originX) / dpr;
-    const toCanvasY = (value: number) => (value - originY) / dpr;
-    const rectLayer = isBox(layer) ? layer : null;
-    const anchors = isSegment(layer)
-      ? [layer.start, layer.end]
-      : rectLayer
-        ? [
-            { x: rectLayer.x, y: rectLayer.y },
-            { x: rectLayer.x + rectLayer.width / 2, y: rectLayer.y },
-            { x: rectLayer.x + rectLayer.width, y: rectLayer.y },
-            { x: rectLayer.x + rectLayer.width, y: rectLayer.y + rectLayer.height / 2 },
-            { x: rectLayer.x + rectLayer.width, y: rectLayer.y + rectLayer.height },
-            { x: rectLayer.x + rectLayer.width / 2, y: rectLayer.y + rectLayer.height },
-            { x: rectLayer.x, y: rectLayer.y + rectLayer.height },
-            { x: rectLayer.x, y: rectLayer.y + rectLayer.height / 2 },
-          ]
-        : [];
-
-    ctx.save();
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.strokeStyle = "#6366F1";
-    ctx.fillStyle = "#fff";
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-
-    if (isSegment(layer)) {
-      ctx.moveTo(toCanvasX(layer.start.x), toCanvasY(layer.start.y));
-      ctx.lineTo(toCanvasX(layer.end.x), toCanvasY(layer.end.y));
-    } else if (rectLayer) {
-      ctx.rect(
-        toCanvasX(rectLayer.x),
-        toCanvasY(rectLayer.y),
-        rectLayer.width / dpr,
-        rectLayer.height / dpr,
-      );
-    } else if (isText(layer)) {
-      const textWidth = Math.max(12, layer.text.length * layer.fontSize * 0.65);
-      ctx.rect(toCanvasX(layer.x), toCanvasY(layer.y), textWidth / dpr, layer.fontSize * 1.25 / dpr);
-    } else if (layer.type === "step") {
-      ctx.arc(toCanvasX(layer.x), toCanvasY(layer.y), layer.radius / dpr, 0, Math.PI * 2);
-    } else if (layer.type === "marker" || isRedact(layer)) {
-      // A dashed box around brush strokes; a line through the middle hid the effect itself.
-      const bounds = layerBounds(layer);
-      ctx.setLineDash([4, 3]);
-      ctx.rect(
-        toCanvasX(bounds.x) - 2,
-        toCanvasY(bounds.y) - 2,
-        bounds.width / dpr + 4,
-        bounds.height / dpr + 4,
-      );
-    }
-
-    ctx.stroke();
-    ctx.setLineDash([]);
-    for (const point of anchors) {
-      ctx.beginPath();
-      ctx.arc(toCanvasX(point.x), toCanvasY(point.y), 3, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-    }
-    if (layer.type === "arrow") {
-      const curve = arrowCurveHandlePoint(layer);
-      ctx.beginPath();
-      ctx.arc(toCanvasX(curve.x), toCanvasY(curve.y), 4, 0, Math.PI * 2);
-      ctx.fillStyle = "#F59E0B";
-      ctx.fill();
-      ctx.stroke();
-    }
-    ctx.restore();
-  }
-
-  function scheduleRender() {
-    if (renderScheduled) return;
-    renderScheduled = true;
-    requestAnimationFrame(() => {
-      renderScheduled = false;
-      drawAnnotations();
+    renderLiveAnnotations({
+      canvas: annotationCanvas,
+      session,
+      selection,
+      layers,
+      preview: layerPreview,
+      selected: selectedLayer(),
+      baseSource,
     });
   }
 
-  function constrainPoint(start: PhysicalPoint, point: PhysicalPoint, shift: boolean): PhysicalPoint {
-    if (!shift) return point;
-    const dx = point.x - start.x; const dy = point.y - start.y;
-    const angle = Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) * Math.PI / 4;
-    const length = Math.max(Math.abs(dx), Math.abs(dy));
-    return {
-      x: Math.round(start.x + Math.cos(angle) * length),
-      y: Math.round(start.y + Math.sin(angle) * length),
-    };
-  }
+  const scheduleRender = createRenderScheduler(drawAnnotations);
 
   function appendLayerGesture(
     start: PhysicalPoint,
@@ -377,106 +224,10 @@
     tool: AnnotationTool,
     shift: boolean,
   ): Layer | null {
-    if (!session || distance(start, end) <= 3) return null;
-    const snapped = tool === "line" || tool === "arrow"
-      ? constrainPoint(start, end, shift)
-      : end;
-    let x = Math.min(start.x, snapped.x);
-    let y = Math.min(start.y, snapped.y);
-    let width = Math.abs(snapped.x - start.x);
-    let height = Math.abs(snapped.y - start.y);
-
-    if ((tool === "rect" || tool === "ellipse") && shift) {
-      const side = Math.max(width, height);
-      width = side;
-      height = side;
-      x = snapped.x < start.x ? start.x - side : start.x;
-      y = snapped.y < start.y ? start.y - side : start.y;
+    if (!session || (tool !== "arrow" && tool !== "line" && tool !== "rect" && tool !== "ellipse")) {
+      return null;
     }
-
-    const base = { color: activeColor, strokeWidth };
-    if (tool === "arrow") {
-      return createLayer({ ...base, type: "arrow", start, end: snapped });
-    }
-    if (tool === "line") {
-      return createLayer({ ...base, type: "line", start, end: snapped });
-    }
-    if (tool === "rect") {
-      return createLayer({
-        ...base,
-        type: "rect",
-        x,
-        y,
-        width: Math.max(1, width),
-        height: Math.max(1, height),
-      });
-    }
-    if (tool === "ellipse") {
-      return createLayer({
-        ...base,
-        type: "ellipse",
-        x,
-        y,
-        width: Math.max(1, width),
-        height: Math.max(1, height),
-      });
-    }
-    return null;
-  }
-
-  function markerWidth(): number {
-    if (strokeWidth === 3) return 14;
-    if (strokeWidth === 8) return 34;
-    return 22;
-  }
-
-  function redactWidth(): number {
-    if (strokeWidth === 3) return 16;
-    if (strokeWidth === 8) return 44;
-    return 28;
-  }
-
-  function axisPoint(start: PhysicalPoint, point: PhysicalPoint): PhysicalPoint {
-    const dx = point.x - start.x;
-    const dy = point.y - start.y;
-    return Math.abs(dx) >= Math.abs(dy)
-      ? { x: point.x, y: start.y }
-      : { x: start.x, y: point.y };
-  }
-
-  function updateBrushPoints(
-    start: PhysicalPoint,
-    point: PhysicalPoint,
-    free: boolean,
-  ): PhysicalPoint[] {
-    if (!free) {
-      brushFree = false;
-      markerPoints = [start, axisPoint(start, point)];
-      return markerPoints;
-    }
-    if (!brushFree) markerPoints = [start];
-    brushFree = true;
-    const previous = markerPoints[markerPoints.length - 1];
-    if (!previous || distance(previous, point) >= 1) markerPoints = [...markerPoints, point];
-    return markerPoints;
-  }
-
-  function createBrushLayer(tool: AnnotationTool, points: PhysicalPoint[]): Layer | null {
-    if (tool === "marker") {
-      return createLayer({
-        type: "marker", color: activeColor, strokeWidth: markerWidth(), points,
-      });
-    }
-    if (tool === "redact") {
-      return createLayer({ type: "redact", points, width: redactWidth(), mode: redactMode });
-    }
-    return null;
-  }
-
-  function stepRadius(): number {
-    if (strokeWidth === 3) return 14;
-    if (strokeWidth === 8) return 28;
-    return 20;
+    return createShapeLayer(start, end, tool, shift, activeColor, strokeWidth);
   }
 
   function pointerPoint(event: PointerEvent): PhysicalPoint {
@@ -556,12 +307,10 @@
       scheduleRender();
       return;
     } else if (activeTool === "step" && selection && contains(selection, point)) {
-      const number = layers.reduce(
-        (maximum, layer) => layer.type === "step" ? Math.max(maximum, layer.number) : maximum,
-        0,
-      ) + 1;
+      const number = nextStepNumber(layers);
       const created = createLayer({
-        type: "step", x: point.x, y: point.y, number, radius: stepRadius(), color: activeColor,
+        type: "step", x: point.x, y: point.y, number,
+        radius: stepRadius(strokeWidth), color: activeColor,
       });
       commitLayers([...layers, created]);
       selectedLayerId = created.id;
@@ -583,16 +332,11 @@
       && (activeTool === "marker" || activeTool === "redact")) {
       brushFree = event.shiftKey;
       markerPoints = [point];
-      layerPreview = createBrushLayer(activeTool, markerPoints);
+      layerPreview = createBrushLayer(
+        activeTool, markerPoints, activeColor, strokeWidth, redactMode,
+      );
       scheduleRender();
     }
-  }
-
-  function sizeForLayer(layer: Layer): number {
-    if (layer.type === "marker") return layer.strokeWidth <= 14 ? 3 : layer.strokeWidth <= 22 ? 5 : 8;
-    if (layer.type === "redact") return layer.width <= 16 ? 3 : layer.width <= 28 ? 5 : 8;
-    if (layer.type === "step") return layer.radius <= 14 ? 3 : layer.radius <= 20 ? 5 : 8;
-    return layer.strokeWidth;
   }
 
   function editStepNumber(layer: Extract<Layer, { type: "step" }>) {
@@ -663,7 +407,10 @@
     const dx = point.x - currentGesture.start.x;
     const dy = point.y - currentGesture.start.y;
     if (currentGesture.mode === "draw") {
-      previewRect = clampRect(normalizeRect(currentGesture.start, point));
+      previewRect = clampRect(
+        normalizeRect(currentGesture.start, point),
+        session.bounds,
+      );
     } else if (currentGesture.mode === "move" && currentGesture.origin) {
       const bounds = session.bounds;
       selection = {
@@ -683,8 +430,18 @@
       selection = resizeRect(currentGesture.origin, currentGesture.handle, dx, dy, session.bounds);
     } else if (currentGesture.mode === "annotate" && currentGesture.tool) {
       if (currentGesture.tool === "marker" || currentGesture.tool === "redact") {
-        const points = updateBrushPoints(currentGesture.start, point, event.shiftKey);
-        layerPreview = createBrushLayer(currentGesture.tool, points);
+        const next = updateBrushPoints(
+          markerPoints,
+          brushFree,
+          currentGesture.start,
+          point,
+          event.shiftKey,
+        );
+        markerPoints = next.points;
+        brushFree = next.free;
+        layerPreview = createBrushLayer(
+          currentGesture.tool, markerPoints, activeColor, strokeWidth, redactMode,
+        );
       } else {
         layerPreview = appendLayerGesture(
           currentGesture.start, point, currentGesture.tool, event.shiftKey,
@@ -721,17 +478,30 @@
     const point = pointerPoint(event);
     if (currentGesture.mode === "draw") {
       if (distance(currentGesture.start, point) < 4) {
-        selection = fullMonitorRect(point);
+        selection = fullMonitorRect(point, session.monitors, session.bounds);
       } else {
-        selection = clampRect(normalizeRect(currentGesture.start, point));
+        selection = clampRect(
+          normalizeRect(currentGesture.start, point),
+          session.bounds,
+        );
       }
     } else if (currentGesture.mode === "annotate" && currentGesture.tool) {
       let created: Layer | null;
       if (currentGesture.tool === "marker" || currentGesture.tool === "redact") {
-        const points = updateBrushPoints(currentGesture.start, point, event.shiftKey);
-        const simplified = simplifyPoints(points);
+        const next = updateBrushPoints(
+          markerPoints,
+          brushFree,
+          currentGesture.start,
+          point,
+          event.shiftKey,
+        );
+        markerPoints = next.points;
+        brushFree = next.free;
+        const simplified = simplifyPoints(markerPoints);
         created = distance(currentGesture.start, point) > 3 && simplified.length > 1
-          ? createBrushLayer(currentGesture.tool, simplified)
+          ? createBrushLayer(
+            currentGesture.tool, simplified, activeColor, strokeWidth, redactMode,
+          )
           : null;
       } else {
         created = appendLayerGesture(
@@ -775,99 +545,30 @@
     scheduleRender();
   }
 
-  function simplifyPoints(points: PhysicalPoint[]): PhysicalPoint[] {
-    const simplified: PhysicalPoint[] = [];
-    for (const point of points) {
-      const previous = simplified[simplified.length - 1];
-      if (!previous || distance(previous, point) >= 2) simplified.push(point);
-    }
-    return simplified;
-  }
-
-  function clampRect(rect: PhysicalRect): PhysicalRect {
-    if (!session) return rect;
-    const bounds = session.bounds;
-    const x = clamp(rect.x, bounds.x, bounds.x + bounds.width - 1);
-    const y = clamp(rect.y, bounds.y, bounds.y + bounds.height - 1);
-    const right = clamp(rect.x + rect.width, x + 1, bounds.x + bounds.width);
-    const bottom = clamp(rect.y + rect.height, y + 1, bounds.y + bounds.height);
-    return { x, y, width: right - x, height: bottom - y };
-  }
-
-  function fullMonitorRect(point: PhysicalPoint): PhysicalRect {
-    if (!session) return { x: point.x, y: point.y, width: 1, height: 1 };
-    const monitor = monitorUnderPoint(point, session.monitors) ?? nearestMonitor(point, session.monitors);
-    return monitor
-      ? { x: monitor.x, y: monitor.y, width: monitor.width, height: monitor.height }
-      : {
-          x: session.bounds.x,
-          y: session.bounds.y,
-          width: session.bounds.width,
-          height: session.bounds.height,
-        };
-  }
-
   function onKeyDown(event: KeyboardEvent) {
-    if (
-      event.key === "Enter"
-      && event.target instanceof HTMLElement
-      && event.target.closest(".toolbar")
-    ) return;
-    if (editingTextId !== null || editingPoint) {
-      if (event.key === "Escape") { event.preventDefault(); finishTextEdit(true); }
-      else if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); finishTextEdit(); }
-      return;
-    }
-    const key = event.key.toLowerCase();
-    if (!(event.ctrlKey || event.metaKey) && !event.altKey && !event.repeat) {
-      const tools: Record<string, AnnotationTool> = {
-        v: "select",
-        a: "arrow",
-        l: "line",
-        r: "rect",
-        e: "ellipse",
-        t: "text",
-        m: "marker",
-        b: "redact",
-        n: "step",
-      };
-      const tool = tools[key];
-      if (tool) {
-        activeTool = tool;
-        return;
-      }
-    }
-    if ((event.ctrlKey || event.metaKey) && key === "z") {
-      event.preventDefault();
-      if (event.shiftKey) redo();
-      else undo();
-      return;
-    }
-    if ((event.ctrlKey || event.metaKey) && key === "y") {
-      event.preventDefault();
-      redo();
-      return;
-    }
-    if ((key === "delete" || key === "backspace") && selectedLayerId) {
-      event.preventDefault();
-      commitLayers(layers.filter((layer) => layer.id !== selectedLayerId));
-      selectedLayerId = null;
-      return;
-    }
-    if (event.key === "Escape") {
-      event.preventDefault();
-      if (selectedLayerId) { selectedLayerId = null; scheduleRender(); } else void closeCapture();
-    } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c") {
-      event.preventDefault();
-      void runAction("copy_selection");
-    } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
-      event.preventDefault();
-      void runAction("save_selection");
-    } else if (event.key === "Enter" && !event.repeat && !busy) {
-      event.preventDefault();
-      if (selection) void runAction("copy_selection");
-      else void selectCursorMonitor();
-    }
+    handleOverlayKeyDown(event, {
+      editingText: editingTextId !== null || Boolean(editingPoint),
+      selectedLayer: Boolean(selectedLayerId),
+      hasSelection: Boolean(selection),
+      busy,
+      finishTextEdit,
+      setTool: (tool) => activeTool = tool,
+      undo,
+      redo,
+      deleteSelection: () => {
+        if (!selectedLayerId) return;
+        commitLayers(layers.filter((layer) => layer.id !== selectedLayerId));
+        selectedLayerId = null;
+      },
+      clearSelection: () => {
+        selectedLayerId = null;
+        scheduleRender();
+      },
+      close: () => void closeCapture(),
+      copy: () => void runAction("copy_selection"),
+      save: () => void runAction("save_selection"),
+      selectCursorMonitor: () => void selectCursorMonitor(),
+    });
   }
 
   function undo() {
@@ -903,13 +604,13 @@
     if (selected.type === "redact") {
       const updated: Layer = {
         id: selected.id, type: "redact", points: selected.points,
-        width: width === 3 ? 16 : width === 8 ? 44 : 28, mode: selected.mode,
+        width: redactWidth(width), mode: selected.mode,
       };
       commitLayers(layers.map((layer) => layer.id === selected.id ? updated : layer));
       return;
     }
     if (selected.type === "step") {
-      const radius = width === 3 ? 14 : width === 8 ? 28 : 20;
+      const radius = stepRadius(width);
       const updated: Layer = {
         id: selected.id, type: "step", x: selected.x, y: selected.y,
         number: selected.number, radius, color: selected.color,
@@ -918,7 +619,7 @@
       return;
     }
     if (selected.type === "marker") {
-      const markerStroke = width === 3 ? 14 : width === 8 ? 34 : 22;
+      const markerStroke = markerWidth(width);
       updateSelected({ strokeWidth: markerStroke });
       return;
     }
@@ -940,86 +641,6 @@
     if (!selected) return;
     const updated = updateLayerStyle(selected, change);
     commitLayers(layers.map((layer) => layer.id === selected.id ? updated : layer));
-  }
-
-  function updateLayerStyle(
-    layer: Layer,
-    change: { color?: string; strokeWidth?: number },
-  ): Layer {
-    if (layer.type === "redact") return layer;
-    if (layer.type === "step") {
-      return {
-        id: layer.id, type: "step", x: layer.x, y: layer.y, number: layer.number,
-        radius: layer.radius, color: change.color ?? layer.color,
-      };
-    }
-    const color = change.color ?? layer.color;
-    const nextWidth = change.strokeWidth ?? layer.strokeWidth;
-    switch (layer.type) {
-      case "arrow":
-        return {
-          id: layer.id,
-          type: "arrow",
-          color,
-          strokeWidth: nextWidth,
-          start: layer.start,
-          end: layer.end,
-          control: layer.control,
-        };
-      case "line":
-        return {
-          id: layer.id,
-          type: "line",
-          color,
-          strokeWidth: nextWidth,
-          start: layer.start,
-          end: layer.end,
-        };
-      case "rect":
-        return {
-          id: layer.id,
-          type: "rect",
-          color,
-          strokeWidth: nextWidth,
-          x: layer.x,
-          y: layer.y,
-          width: layer.width,
-          height: layer.height,
-        };
-      case "ellipse":
-        return {
-          id: layer.id,
-          type: "ellipse",
-          color,
-          strokeWidth: nextWidth,
-          x: layer.x,
-          y: layer.y,
-          width: layer.width,
-          height: layer.height,
-        };
-      case "text":
-        return {
-          id: layer.id,
-          type: "text",
-          color,
-          strokeWidth: nextWidth,
-          x: layer.x,
-          y: layer.y,
-          text: layer.text,
-          fontSize: change.strokeWidth === undefined ? layer.fontSize : fontSizeForWidth(nextWidth),
-        };
-      case "marker":
-        return {
-          id: layer.id, type: "marker", color, strokeWidth: nextWidth,
-          points: layer.points,
-        };
-    }
-  }
-
-  function fontSizeForWidth(width: number): number {
-    if (width === 3) return 16;
-    if (width === 5) return 24;
-    return 36;
   }
 
   function textEditorStyle(point: PhysicalPoint): string {
@@ -1047,7 +668,7 @@
     if (!session) return;
     try {
       const point = await invoke<PhysicalPoint>("cursor_position");
-      selection = fullMonitorRect(point);
+      selection = fullMonitorRect(point, session.monitors, session.bounds);
     } catch (error) {
       showNotice(String(error));
     }
@@ -1059,28 +680,12 @@
     busy = true;
     notice = "";
     try {
-      const layerBytes = layers.length ? rasterizeAnnotations(selection) : new Uint8Array(0);
-      await invoke(command, layerBytes, { headers: { "x-keepshot-rect": JSON.stringify(selection) } });
+      await invokeSelectionAction(command, selection, layers, baseSource);
     } catch (error) {
       if (session?.session === actionSession) showNotice(String(error));
     } finally {
       if (session?.session === actionSession) busy = false;
     }
-  }
-
-  function rasterizeAnnotations(rect: PhysicalRect): Uint8Array {
-    const canvas = document.createElement("canvas");
-    canvas.width = rect.width;
-    canvas.height = rect.height;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) throw new Error("Canvas 2D is unavailable");
-    renderLayers(ctx, layers, {
-      originX: rect.x,
-      originY: rect.y,
-      scale: 1,
-    }, baseSource ?? undefined, rect);
-    const pixels = ctx.getImageData(0, 0, rect.width, rect.height).data;
-    return new Uint8Array(pixels.buffer);
   }
 
   async function closeCapture() {
@@ -1094,37 +699,6 @@
   function onContextMenu(event: MouseEvent) {
     event.preventDefault();
     void closeCapture();
-  }
-
-  function contains(rect: PhysicalRect, point: PhysicalPoint): boolean {
-    return point.x >= rect.x
-      && point.x < rect.x + rect.width
-      && point.y >= rect.y
-      && point.y < rect.y + rect.height;
-  }
-
-  function distance(left: PhysicalPoint, right: PhysicalPoint): number {
-    return Math.hypot(left.x - right.x, left.y - right.y);
-  }
-
-  function resizeRect(
-    origin: PhysicalRect,
-    handle: string,
-    dx: number,
-    dy: number,
-    bounds: VirtualBounds,
-  ): PhysicalRect {
-    let left = origin.x;
-    let top = origin.y;
-    let right = origin.x + origin.width;
-    let bottom = origin.y + origin.height;
-    if (handle.includes("w")) left = clamp(origin.x + dx, bounds.x, right - 1);
-    if (handle.includes("e")) right = clamp(origin.x + origin.width + dx, left + 1, bounds.x + bounds.width);
-    if (handle.includes("n")) top = clamp(origin.y + dy, bounds.y, bottom - 1);
-    if (handle.includes("s")) {
-      bottom = clamp(origin.y + origin.height + dy, top + 1, bounds.y + bounds.height);
-    }
-    return { x: left, y: top, width: right - left, height: bottom - top };
   }
 
   onMount(() => {
@@ -1223,16 +797,14 @@
       session.bounds,
       window.devicePixelRatio || 1,
     )}
-    <div class="selection-outline" style={rectStyle(visibleRect)}>
-      {#if selection && !gesture}
-        {#each handleNames as handle (handle)}
-          <span class="handle handle-{handle}" data-handle={handle} aria-hidden="true"></span>
-        {/each}
-        <div class:inside={rectPosition.y < 30} class="dimension-chip">
-          {visibleRect.width} × {visibleRect.height} px
-        </div>
-      {/if}
-    </div>
+    <SelectionFrame
+      style={rectStyle(visibleRect)}
+      width={visibleRect.width}
+      height={visibleRect.height}
+      handles={handleNames}
+      editable={Boolean(selection && !gesture)}
+      inside={rectPosition.y < 30}
+    />
   {/if}
 
   {#if selection && !gesture && actionPosition}
@@ -1341,101 +913,6 @@
 
   .dimmer-svg rect {
     fill: rgba(10, 12, 16, 0.45);
-  }
-
-  .selection-outline {
-    position: absolute;
-    z-index: 2;
-    border: 1.5px solid var(--color-primary);
-    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4), 0 0 16px rgba(99, 102, 241, 0.35);
-    pointer-events: none;
-  }
-
-  .dimension-chip {
-    position: absolute;
-    top: -29px;
-    left: -1px;
-    padding: 4px 7px;
-    border: 1px solid var(--color-glass-rim);
-    border-radius: var(--radius-sm);
-    background: var(--color-glass);
-    box-shadow: var(--shadow-l1);
-    color: #7dd3fc;
-    font: 500 11px/16px var(--font-mono);
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-  }
-
-  .dimension-chip.inside {
-    top: 4px;
-    left: 4px;
-  }
-
-  .handle {
-    position: absolute;
-    width: 8px;
-    height: 8px;
-    border: 1.5px solid var(--color-primary);
-    border-radius: 2px;
-    background: #fff;
-    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.8);
-    pointer-events: auto;
-  }
-
-  .handle-nw {
-    top: 0;
-    left: 0;
-    transform: translate(-50%, -50%);
-    cursor: nwse-resize;
-  }
-
-  .handle-n {
-    top: 0;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    cursor: ns-resize;
-  }
-
-  .handle-ne {
-    top: 0;
-    right: 0;
-    transform: translate(50%, -50%);
-    cursor: nesw-resize;
-  }
-
-  .handle-e {
-    top: 50%;
-    right: 0;
-    transform: translate(50%, -50%);
-    cursor: ew-resize;
-  }
-
-  .handle-se {
-    right: 0;
-    bottom: 0;
-    transform: translate(50%, 50%);
-    cursor: nwse-resize;
-  }
-
-  .handle-s {
-    bottom: 0;
-    left: 50%;
-    transform: translate(-50%, 50%);
-    cursor: ns-resize;
-  }
-
-  .handle-sw {
-    bottom: 0;
-    left: 0;
-    transform: translate(-50%, 50%);
-    cursor: nesw-resize;
-  }
-
-  .handle-w {
-    top: 50%;
-    left: 0;
-    transform: translate(-50%, -50%);
-    cursor: ew-resize;
   }
 
   .text-editor {
