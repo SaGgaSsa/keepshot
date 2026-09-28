@@ -48,6 +48,8 @@ impl Default for SettingsState {
     }
 }
 
+const PRINT_SCREEN_MIGRATION: &str = "migratedToPrintScreen";
+
 pub fn load(app: &AppHandle) -> Result<Settings, String> {
     let store = app
         .store("settings.json")
@@ -56,6 +58,20 @@ pub fn load(app: &AppHandle) -> Result<Settings, String> {
         .get("settings")
         .and_then(|value| serde_json::from_value(value).ok())
         .unwrap_or_default();
+    // Up to 0.1.1 the default capture shortcut was Ctrl+Shift+X and completing onboarding
+    // persisted it, so move those installs to Print Screen once. A marker keeps a later,
+    // deliberate choice of Ctrl+Shift+X from being migrated again.
+    if store.get(PRINT_SCREEN_MIGRATION).is_none() {
+        if settings.capture_shortcut == "Ctrl+Shift+X" {
+            settings.capture_shortcut = "PrintScreen".to_string();
+            let value = serde_json::to_value(&settings).map_err(|error| error.to_string())?;
+            store.set("settings", value);
+        }
+        store.set(PRINT_SCREEN_MIGRATION, true);
+        store
+            .save()
+            .map_err(|error| format!("Could not save settings: {error}"))?;
+    }
     let defaults = Settings::default();
     if shortcut(&settings.capture_shortcut).is_err() {
         settings.capture_shortcut = defaults.capture_shortcut.clone();
