@@ -16,6 +16,7 @@
     shortcutErrors: string[];
     printScreenConflict: boolean | null;
     defaultSaveFolder: string;
+    windowMaterial: "mica" | "solid";
   };
 
   let view = $state<SettingsView | null>(null);
@@ -29,6 +30,7 @@
     try {
       view = await invoke<SettingsView>("get_settings_view");
       printConflict = view.printScreenConflict;
+      document.documentElement.dataset.material = view.windowMaterial;
     } catch (cause) {
       error = message(cause);
     }
@@ -282,6 +284,10 @@
     margin: 0;
     background: var(--color-surface);
   }
+  :global(html[data-material="mica"]),
+  :global(html[data-material="mica"] body) {
+    background: transparent;
+  }
   main {
     width: min(520px, calc(100% - 36px));
     margin: 0 auto;
@@ -332,8 +338,13 @@
     padding: 15px 16px;
     border: 1px solid var(--color-glass-ambient);
     border-radius: 12px;
-    background: var(--color-surface-low);
+    background: var(--color-settings-panel);
     box-shadow: var(--shadow-l1);
+  }
+  :global(html[data-material="mica"]) .panel {
+    border-color: var(--color-glass-rim);
+    background: var(--color-settings-panel-mica);
+    backdrop-filter: blur(18px) saturate(150%);
   }
   .section-title {
     display: flex;
@@ -379,14 +390,16 @@
     padding: 4px 7px;
     border: 1px solid var(--color-glass-rim);
     border-radius: 4px;
-    background: rgba(255, 255, 255, 0.08);
-    color: white;
+    background: var(--color-shortcut-bg);
+    color: var(--color-shortcut-text);
     font: 600 10px var(--font-mono);
   }
   button {
     border: 0;
     font: inherit;
     cursor: pointer;
+    transition: background-color var(--motion-fast), color var(--motion-fast),
+      border-color var(--motion-fast);
   }
   .primary, .secondary {
     min-height: 32px;
@@ -407,11 +420,11 @@
   }
   .secondary {
     border: 1px solid var(--color-divider);
-    background: rgba(255, 255, 255, 0.06);
+    background: var(--color-hover);
     color: var(--color-text);
   }
   .secondary:hover {
-    background: rgba(255, 255, 255, 0.12);
+    background: var(--color-surface-high);
   }
   .got-it {
     margin-top: 14px;
@@ -458,11 +471,11 @@
   .text-button {
     padding: 5px 2px;
     background: transparent;
-    color: #a5b4fc;
+    color: var(--color-primary-hover);
     font-size: 11px;
   }
   .text-button:hover {
-    color: white;
+    color: var(--color-primary);
   }
   .reset {
     margin-top: 5px;
@@ -490,7 +503,7 @@
     border: 1px solid var(--color-glass-rim);
     border-radius: 99px;
     background: var(--color-surface-high);
-    transition: 120ms ease;
+    transition: background-color var(--motion-fast), border-color var(--motion-fast);
   }
   .switch::after {
     display: block;
@@ -500,7 +513,7 @@
     border-radius: 50%;
     background: #a1a1aa;
     content: "";
-    transition: 120ms ease;
+    transition: transform var(--motion-fast), background-color var(--motion-fast);
   }
   .toggle-row input:checked + .switch {
     border-color: var(--color-primary);
@@ -516,6 +529,7 @@
   }
   .diagnostics {
     padding-bottom: 12px;
+    interpolate-size: allow-keywords;
   }
   .diagnostics summary {
     display: flex;
@@ -537,13 +551,26 @@
   .diagnostics[open] .chevron {
     transform: rotate(180deg);
   }
+  .diagnostics::details-content {
+    height: 0;
+    overflow: clip;
+    opacity: 0;
+    content-visibility: hidden;
+    transition: content-visibility var(--motion-normal) allow-discrete,
+      height var(--motion-normal), opacity var(--motion-normal);
+  }
+  .diagnostics[open]::details-content {
+    height: auto;
+    opacity: 1;
+    content-visibility: visible;
+  }
   .warning, .compact-warning {
     margin-top: 12px;
     padding: 10px;
-    border: 1px solid #f59e0b55;
+    border: 1px solid var(--color-warning-border);
     border-radius: 8px;
-    background: #f59e0b12;
-    color: #fcd34d;
+    background: var(--color-warning-bg);
+    color: var(--color-warning-text);
     font-size: 11px;
   }
   .warning p {
@@ -572,9 +599,9 @@
   }
   .error-banner {
     padding: 9px 12px;
-    border: 1px solid #ef444455;
+    border: 1px solid var(--color-danger-border);
     border-radius: 8px;
-    background: #ef444412;
+    background: var(--color-danger-bg);
   }
   .loading {
     color: var(--color-text-muted);

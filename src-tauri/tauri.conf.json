@@ -15,6 +15,7 @@
         "title": "KeepShot Settings",
         "width": 560,
         "height": 680,
+        "transparent": true,
         "center": true,
         "resizable": false,
         "visible": false

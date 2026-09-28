@@ -132,9 +132,11 @@
     padding: 5px 8px;
     border: 1px solid var(--color-divider);
     border-radius: var(--radius-md);
-    background: rgba(255, 255, 255, 0.04);
+    background: var(--color-hover);
     color: var(--color-text);
     cursor: pointer;
+    transition: background-color var(--motion-fast), color var(--motion-fast),
+      border-color var(--motion-fast);
   }
   button:hover, button.recording {
     border-color: rgba(99, 102, 241, 0.6);
@@ -148,8 +150,8 @@
     padding: 4px 6px;
     border: 1px solid var(--color-glass-rim);
     border-radius: 4px;
-    background: rgba(255, 255, 255, 0.08);
-    color: white;
+    background: var(--color-shortcut-bg);
+    color: var(--color-shortcut-text);
     font: 600 10px var(--font-sans);
     text-transform: uppercase;
   }

@@ -1,6 +1,17 @@
 #[cfg(windows)]
 mod windows;
 
+pub fn supports_mica() -> bool {
+    #[cfg(windows)]
+    {
+        windows::supports_mica()
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
 pub fn snipping_tool_owns_print_screen() -> Option<bool> {
     #[cfg(windows)]
     {

@@ -142,6 +142,27 @@ pub fn run() {
                 eprintln!("Could not initialize system tray: {error}");
             }
             if let Some(window) = app.get_webview_window("main") {
+                if platform::supports_mica() {
+                    let effects = tauri::utils::config::WindowEffectsConfig {
+                        effects: vec![tauri::window::Effect::Mica],
+                        state: None,
+                        radius: None,
+                        color: None,
+                        ..Default::default()
+                    };
+                    match window.set_effects(effects) {
+                        Ok(()) => {
+                            if let Ok(mut material) = app
+                                .state::<settings::SettingsState>()
+                                .window_material
+                                .lock()
+                            {
+                                *material = "mica".to_string();
+                            }
+                        }
+                        Err(error) => eprintln!("Could not enable Mica for Settings: {error}"),
+                    }
+                }
                 let settings_window = window.clone();
                 let settings_app = app.handle().clone();
                 window.on_window_event(move |event| {
@@ -394,6 +415,7 @@ struct SettingsView {
     shortcut_errors: Vec<String>,
     print_screen_conflict: Option<bool>,
     default_save_folder: String,
+    window_material: String,
 }
 
 #[tauri::command]
@@ -404,6 +426,11 @@ fn get_settings_view(app: tauri::AppHandle) -> Result<SettingsView, String> {
         .shortcut_errors
         .lock()
         .map_err(|_| "Shortcut status is unavailable".to_string())?
+        .clone();
+    let window_material = state
+        .window_material
+        .lock()
+        .map_err(|_| "Window material status is unavailable".to_string())?
         .clone();
     let autostart = app
         .autolaunch()
@@ -424,6 +451,7 @@ fn get_settings_view(app: tauri::AppHandle) -> Result<SettingsView, String> {
         shortcut_errors,
         print_screen_conflict,
         default_save_folder: default_save_folder(&app)?.display().to_string(),
+        window_material,
     })
 }
 

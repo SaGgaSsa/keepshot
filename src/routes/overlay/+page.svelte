@@ -731,6 +731,7 @@
   }
 
   onMount(() => {
+    document.documentElement.dataset.theme = "dark";
     const win = getCurrentWebviewWindow();
     let unlistenFrame: (() => void) | undefined;
     let unlistenClear: (() => void) | undefined;

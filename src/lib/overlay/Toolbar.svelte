@@ -187,6 +187,7 @@
     backdrop-filter: blur(16px) saturate(180%);
     box-shadow: var(--shadow-l1);
     cursor: default;
+    animation: toolbar-enter 140ms cubic-bezier(0.2, 0, 0, 1) both;
   }
   .toolbar.working {
     opacity: .72;
@@ -213,6 +214,8 @@
     border: 1px solid transparent;
     color: var(--color-text-muted);
     cursor: pointer;
+    transition: background-color var(--motion-fast), color var(--motion-fast),
+      border-color var(--motion-fast);
   }
   button:hover:not(:disabled) {
     color: #fff;
@@ -280,6 +283,8 @@
     background: var(--color-glass-level-2);
     backdrop-filter: blur(24px) saturate(200%);
     box-shadow: var(--shadow-l2);
+    transform-origin: bottom left;
+    animation: palette-enter 120ms cubic-bezier(0.2, 0, 0, 1) both;
   }
   .palette-swatch {
     width: 20px;
@@ -370,5 +375,27 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     box-shadow: var(--shadow-l1);
+  }
+
+  @keyframes toolbar-enter {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes palette-enter {
+    from {
+      opacity: 0;
+      transform: scale(0.96);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
   }
 </style>

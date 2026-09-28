@@ -32,6 +32,7 @@ pub struct SettingsState {
     pub history: Mutex<Option<Shortcut>>,
     pub shortcut_errors: Mutex<Vec<String>>,
     pub suspended: Mutex<bool>,
+    pub window_material: Mutex<String>,
 }
 
 impl Default for SettingsState {
@@ -42,6 +43,7 @@ impl Default for SettingsState {
             history: Mutex::new(None),
             shortcut_errors: Mutex::new(Vec::new()),
             suspended: Mutex::new(false),
+            window_material: Mutex::new("solid".to_string()),
         }
     }
 }

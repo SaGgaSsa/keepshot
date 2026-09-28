@@ -15,16 +15,30 @@
   let items = $state<HistoryItem[]>([]);
   let selectedIndex = $state(0);
   let errorMessage = $state("");
+  let entrance = $state(false);
+  let entranceFrame = 0;
+  let entranceTimer: number | undefined;
   const relativeTime = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
 
-  async function refresh(): Promise<void> {
+  async function refresh(animate = false): Promise<void> {
     try {
       items = await invoke<HistoryItem[]>("history_list");
       selectedIndex = Math.min(selectedIndex, Math.max(0, items.length - 1));
       errorMessage = "";
+      if (animate) restartEntrance();
     } catch (error) {
       errorMessage = String(error);
     }
+  }
+
+  function restartEntrance(): void {
+    entrance = false;
+    cancelAnimationFrame(entranceFrame);
+    if (entranceTimer !== undefined) window.clearTimeout(entranceTimer);
+    entranceFrame = requestAnimationFrame(() => {
+      entrance = true;
+      entranceTimer = window.setTimeout(() => entrance = false, 360);
+    });
   }
 
   function updatedLabel(value: string): string {
@@ -120,17 +134,20 @@
     const currentWindow = getCurrentWebviewWindow();
     let unlistenShown: (() => void) | undefined;
     let disposed = false;
-    void currentWindow.listen("history:shown", () => void refresh()).then((unlisten) => {
+    void currentWindow.listen("history:shown", () => void refresh(true)).then((unlisten) => {
       if (disposed) unlisten();
       else unlistenShown = unlisten;
     });
+    const refreshOnFocus = () => void refresh();
     window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("focus", refresh);
+    window.addEventListener("focus", refreshOnFocus);
     void refresh();
     return () => {
       disposed = true;
+      cancelAnimationFrame(entranceFrame);
+      if (entranceTimer !== undefined) window.clearTimeout(entranceTimer);
       window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("focus", refresh);
+      window.removeEventListener("focus", refreshOnFocus);
       unlistenShown?.();
     };
   });
@@ -140,7 +157,7 @@
   <title>KeepShot History</title>
 </svelte:head>
 
-<main class="panel" aria-label="Capture history">
+<main class="panel" class:entering={entrance} aria-label="Capture history">
   <header>
     <div>
       <h1>History</h1>
@@ -173,6 +190,8 @@
       {#each items as item, index (item.id)}
         <article
           class:active={selectedIndex === index}
+          class:staggered={index < 8}
+          style={`--enter-delay:${Math.min(index, 7) * 20}ms`}
           onmouseenter={() => selectedIndex = index}
           onfocusin={() => selectedIndex = index}
         >
@@ -246,18 +265,18 @@
 
   h1 {
     margin: 0;
-    color: #fff;
+    color: var(--color-text-strong);
     font-size: 20px;
     font-weight: 600;
     line-height: 28px;
-    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8), 0 0 12px rgba(0, 0, 0, 0.6);
+    text-shadow: var(--color-text-shadow);
   }
 
   header p {
     margin: 1px 0 0;
-    color: #e4e4e7;
+    color: var(--color-text-variant);
     font-size: 12px;
-    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+    text-shadow: var(--color-text-shadow);
   }
 
   .close {
@@ -277,11 +296,13 @@
     background: transparent;
     color: var(--color-text-muted);
     cursor: pointer;
+    transition: background-color var(--motion-fast), color var(--motion-fast),
+      border-color var(--motion-fast);
   }
 
   button:hover {
-    background: rgba(255, 255, 255, 0.08);
-    color: #fff;
+    background: var(--color-hover);
+    color: var(--color-text-strong);
   }
 
   button svg {
@@ -314,6 +335,7 @@
     background: var(--color-glass);
     backdrop-filter: blur(16px) saturate(180%);
     box-shadow: var(--shadow-l1);
+    transition: border-color var(--motion-fast);
   }
 
   .preview {
@@ -363,9 +385,11 @@
     padding: 3px;
     border: 1px solid var(--color-glass-rim);
     border-radius: 8px;
-    background: rgba(24, 24, 27, 0.94);
+    background: var(--color-glass-level-2);
+    color: var(--color-text);
+    backdrop-filter: blur(16px) saturate(180%);
     opacity: 0;
-    transition: opacity 100ms ease;
+    transition: opacity var(--motion-fast);
   }
 
   article:hover .actions, article:focus-within .actions, article.active .actions {
@@ -384,7 +408,7 @@
 
   .actions .delete:hover {
     background: rgba(239, 68, 68, 0.18);
-    color: #ef4444;
+    color: var(--color-danger);
   }
 
   .empty {
@@ -429,5 +453,36 @@
   .error {
     margin: -8px 0 12px;
     color: var(--color-danger);
+  }
+
+  .panel.entering {
+    animation: panel-enter 160ms cubic-bezier(0.2, 0, 0, 1) both;
+  }
+
+  .panel.entering article.staggered {
+    animation: card-enter 160ms cubic-bezier(0.2, 0, 0, 1) both;
+    animation-delay: var(--enter-delay);
+  }
+
+  @keyframes panel-enter {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes card-enter {
+    from {
+      opacity: 0;
+      transform: translateY(5px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
   }
 </style>

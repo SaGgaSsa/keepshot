@@ -3,6 +3,33 @@ use std::process::Command;
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+pub fn supports_mica() -> bool {
+    let Ok(output) = Command::new("reg.exe")
+        .args([
+            "query",
+            r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion",
+            "/v",
+            "CurrentBuildNumber",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+    else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let Some(value) = text
+        .lines()
+        .find(|line| line.trim_start().starts_with("CurrentBuildNumber"))
+        .and_then(|line| line.split_whitespace().last())
+    else {
+        return false;
+    };
+    value.parse::<u32>().is_ok_and(|build| build >= 22_000)
+}
+
 pub fn snipping_tool_owns_print_screen() -> Option<bool> {
     // Query the whole key and look the value up by name: reg.exe error messages are localized,
     // so "value not found" cannot be detected reliably from its output.
