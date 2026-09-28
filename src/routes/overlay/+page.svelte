@@ -522,14 +522,14 @@
     const hit = selectedHandle && selected
       ? selected
       : activeTool === "select" && selection && contains(selection, point)
-        ? [...layers].reverse().find((layer) => hitTest(layer, point))
+        // Redaction is final once drawn (undo is the only way back), so it is never selectable.
+        ? [...layers].reverse().find((layer) => !isRedact(layer) && hitTest(layer, point))
         : undefined;
     let mode: Gesture["mode"] = "draw";
     if (regionHandle) mode = "resize";
     else if (hit && activeTool === "select") {
       selectedLayerId = hit.id;
       if (hit.type !== "redact") activeColor = hit.color;
-      if (hit.type === "redact") redactMode = hit.mode;
       strokeWidth = sizeForLayer(hit);
       const annotationResize = selectedHandle && selected?.id === hit.id
         ? selectedHandle
@@ -738,7 +738,10 @@
           currentGesture.start, point, currentGesture.tool, event.shiftKey,
         );
       }
-      if (created) { commitLayers([...layers, created]); selectedLayerId = created.id; }
+      if (created) {
+        commitLayers([...layers, created]);
+        selectedLayerId = isRedact(created) ? null : created.id;
+      }
       layerPreview = null;
     } else if ((currentGesture.mode === "moveLayer" || currentGesture.mode === "resizeLayer"
       || currentGesture.mode === "curve")
@@ -1239,7 +1242,7 @@
       color={activeColor}
       strokeWidth={strokeWidth}
       {redactMode}
-      showRedactMode={activeTool === "redact" || isRedact(selectedLayer())}
+      showRedactMode={activeTool === "redact"}
       {canUndo}
       {canRedo}
       {busy}
