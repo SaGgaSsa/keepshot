@@ -175,16 +175,34 @@ impl FrameStore {
         })
     }
 
-    pub fn frame_bytes(&self, label: &str, session_id: &str) -> Option<Vec<u8>> {
-        let current = self.inner.lock().ok()?;
-        let session = current.as_ref()?;
-        if session.id != session_id {
+    /// Returns rows `start_row..end_row` of a frame. The overlay fetches frames as
+    /// parallel row bands because WebView2 custom-protocol throughput is per request.
+    pub fn frame_rows(
+        &self,
+        label: &str,
+        session_id: &str,
+        start_row: u32,
+        end_row: u32,
+    ) -> Option<Vec<u8>> {
+        let (bytes, width, height) = {
+            let current = self.inner.lock().ok()?;
+            let session = current
+                .as_ref()
+                .filter(|session| session.id == session_id)?;
+            let frame = session.entries.get(label)?;
+            (
+                Arc::clone(&frame.bytes),
+                frame.monitor.width,
+                frame.monitor.height,
+            )
+        };
+        if start_row >= end_row || end_row > height {
             return None;
         }
-        session
-            .entries
-            .get(label)
-            .map(|frame| frame.bytes.as_ref().clone())
+        let stride = width as usize * 4;
+        bytes
+            .get(start_row as usize * stride..end_row as usize * stride)
+            .map(<[u8]>::to_vec)
     }
 
     pub fn validate_ready(

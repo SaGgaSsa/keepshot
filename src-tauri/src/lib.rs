@@ -25,15 +25,20 @@ pub fn run() {
         .register_asynchronous_uri_scheme_protocol("frame", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
             let label = request.uri().path().trim_start_matches('/').to_string();
-            let session = request
-                .uri()
-                .query()
-                .and_then(|query| query.split('&').find_map(|pair| pair.strip_prefix("s=")))
-                .map(str::to_owned);
-            let body = session
-                .and_then(|session| {
+            let query = request.uri().query().unwrap_or_default();
+            let param = |name: &str| {
+                query
+                    .split('&')
+                    .find_map(|pair| pair.strip_prefix(name)?.strip_prefix('='))
+            };
+            let rows = param("y0")
+                .zip(param("y1"))
+                .and_then(|(start, end)| Some((start.parse().ok()?, end.parse().ok()?)));
+            let body = param("s")
+                .zip(rows)
+                .and_then(|(session, (start_row, end_row))| {
                     app.state::<frames::FrameStore>()
-                        .frame_bytes(&label, &session)
+                        .frame_rows(&label, session, start_row, end_row)
                 })
                 .unwrap_or_default();
             let status = if body.is_empty() { 404 } else { 200 };

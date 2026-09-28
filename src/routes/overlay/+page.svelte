@@ -61,9 +61,22 @@
     return `M0 0 H${width} V${height} H0 Z M${left} ${top} H${right} V${bottom} H${left} Z`;
   });
 
-  function frameUrl(monitor: MonitorGeometry): string {
+  // WebView2 custom-protocol throughput is per request, so frames are fetched as parallel row bands.
+  const FRAME_BAND_BYTES = 2 * 1024 * 1024;
+
+  function frameBands(monitor: MonitorGeometry): [number, number][] {
+    const rowsPerBand = Math.max(1, Math.floor(FRAME_BAND_BYTES / (monitor.width * 4)));
+    const bands: [number, number][] = [];
+    for (let start = 0; start < monitor.height; start += rowsPerBand) {
+      bands.push([start, Math.min(monitor.height, start + rowsPerBand)]);
+    }
+    return bands;
+  }
+
+  function frameUrl(monitor: MonitorGeometry, startRow: number, endRow: number): string {
     if (!session) return "";
-    return `http://frame.localhost/${encodeURIComponent(monitor.label)}?s=${encodeURIComponent(session.session)}`;
+    const query = `s=${encodeURIComponent(session.session)}&y0=${startRow}&y1=${endRow}`;
+    return `http://frame.localhost/${encodeURIComponent(monitor.label)}?${query}`;
   }
 
   function monitorStyle(monitor: MonitorGeometry): string {
@@ -102,18 +115,23 @@
           const canvas = document.querySelector<HTMLCanvasElement>(`canvas[data-monitor-label="${CSS.escape(monitor.label)}"]`);
           if (!canvas) throw new Error(`Frame canvas for ${monitor.label} was not mounted`);
           // Frames arrive as raw opaque RGBA, so painting skips image decoding entirely.
-          const response = await fetch(frameUrl(monitor));
-          if (!response.ok) throw new Error(`Frame load failed for ${monitor.label}`);
-          const buffer = await response.arrayBuffer();
-          const loadedAt = performance.now();
-          if (sequence !== loadSequence) throw new Error("Stale capture session");
-          const expectedBytes = monitor.width * monitor.height * 4;
-          if (buffer.byteLength !== expectedBytes) {
-            throw new Error(`Frame for ${monitor.label} has ${buffer.byteLength} bytes, expected ${expectedBytes}`);
-          }
           const context = canvas.getContext("2d", { alpha: false });
           if (!context) throw new Error(`Canvas 2D is unavailable for ${monitor.label}`);
-          context.putImageData(new ImageData(new Uint8ClampedArray(buffer), monitor.width, monitor.height), 0, 0);
+          let loadedAt = arrivedAt;
+          await Promise.all(
+            frameBands(monitor).map(async ([startRow, endRow]) => {
+              const response = await fetch(frameUrl(monitor, startRow, endRow));
+              if (!response.ok) throw new Error(`Frame load failed for ${monitor.label}`);
+              const buffer = await response.arrayBuffer();
+              loadedAt = Math.max(loadedAt, performance.now());
+              if (sequence !== loadSequence) throw new Error("Stale capture session");
+              const rows = endRow - startRow;
+              if (buffer.byteLength !== monitor.width * rows * 4) {
+                throw new Error(`Frame band for ${monitor.label} has an unexpected size`);
+              }
+              context.putImageData(new ImageData(new Uint8ClampedArray(buffer), monitor.width, rows), 0, startRow);
+            }),
+          );
           return {
             label: monitor.label,
             loadMs: loadedAt - arrivedAt,
