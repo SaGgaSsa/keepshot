@@ -43,14 +43,14 @@ Grabación de video/GIF, OCR, subida a la nube, scroll capture, historial de por
 - `src/` — frontend SvelteKit (SPA, sin SSR).
 - `src-tauri/` — backend Rust (`src/lib.rs` es el entry point de la app).
 - `docs/design/DESIGN.md` — sistema de diseño (tokens, componentes, elevación).
-- `docs/design/stitch-reference.html` — mockup exportado de Google Stitch. **Es solo referencia visual, no código real**: no copiar su Tailwind por CDN ni su estructura; tomar de ahí la intención visual y reimplementar con los tokens propios.
+- `docs/design/stitch-reference.html` — mockup exportado de Google Stitch, **solo local (en `.gitignore`, no se versiona)**. Puede no existir en otros clones. **Es solo referencia visual, no código real**: no copiar su Tailwind por CDN ni su estructura; tomar de ahí la intención visual y reimplementar con los tokens propios.
 
 ## Arquitectura y decisiones técnicas clave
 
 - **Latencia**: el overlay tiene que aparecer en <150 ms desde el hotkey. Pre-crear las ventanas de overlay ocultas al iniciar y solo mostrarlas; no crearlas en cada captura.
-- **Flujo de captura**: 1) capturar todos los monitores en Rust; 2) mostrar un overlay borderless, always-on-top, **una ventana por monitor**, con el frame congelado de fondo; 3) seleccionar y anotar; 4) componer el resultado.
+- **Flujo de captura**: 1) capturar todos los monitores en Rust; 2) mostrar **una sola ventana overlay** borderless, always-on-top, que cubre el rectángulo envolvente del escritorio virtual (como Lightshot), con el frame congelado de cada monitor posicionado en su lugar; 3) seleccionar y anotar; 4) componer el resultado.
 - **DPI**: la app debe ser Per-Monitor DPI Aware v2. Trabajar internamente en píxeles físicos y convertir a lógicos solo para la UI. Probar siempre con monitores de escalados distintos (100% + 150%).
-- **Selección entre monitores**: decidir en una spike si el MVP permite una selección que cruce dos monitores (requiere coordinar ventanas desde el backend) o si se limita a un monitor por captura.
+- **Selección entre monitores**: decidido — la selección puede cruzar monitores (una sola ventana). Por ahora solo se soporta escala 100%; escalas mixtas quedan pendientes (la conversión CSS↔físico está centralizada en `src/lib/overlay/geometry.ts`).
 - **Transferencia de imágenes al webview**: no usar base64 para capturas grandes; servirlas por protocolo custom de Tauri o asset protocol.
 - **Linux (etapa 2)**: en Wayland la captura pasa por xdg-desktop-portal y los atajos globales están restringidos. No acoplar el core a APIs exclusivas de Windows: aislar captura, hotkeys y efectos de ventana detrás de módulos por plataforma.
 

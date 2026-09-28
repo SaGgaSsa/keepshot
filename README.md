@@ -30,7 +30,6 @@ cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 ## Design
 
 The visual direction lives in [`docs/design/DESIGN.md`](docs/design/DESIGN.md).
-`docs/design/stitch-reference.html` is a mockup exported from Google Stitch — a visual reference only, not production code.
 
 ## License
 
