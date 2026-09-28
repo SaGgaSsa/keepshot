@@ -1,530 +1,593 @@
-<script lang="ts">
+﻿<script lang="ts">
+  import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
-  import { listen } from "@tauri-apps/api/event";
+  import Diagnostics from "$lib/settings/Diagnostics.svelte";
+  import ShortcutRecorder from "$lib/settings/ShortcutRecorder.svelte";
 
-  type MonitorMetrics = {
-    label: string;
-    name: string;
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-    scaleFactor: number;
-    captureMs: number;
-    prepareMs: number;
-    loadMs: number;
-    paintMs: number;
+  type Settings = {
+    captureShortcut: string;
+    historyShortcut: string;
+    saveFolder: string | null;
+    onboardingDone: boolean;
+  };
+  type SettingsView = {
+    settings: Settings;
+    autostart: boolean;
+    shortcutErrors: string[];
+    printScreenConflict: boolean | null;
+    defaultSaveFolder: string;
   };
 
-  type CaptureMetrics = {
-    session: string;
-    captureTotalMs: number;
-    emitMs: number;
-    shownMs: number;
-    monitors: MonitorMetrics[];
-  };
+  let view = $state<SettingsView | null>(null);
+  let error = $state("");
+  let captureError = $state("");
+  let historyError = $state("");
+  let printConflict = $state<boolean | null>(null);
+  let busy = $state(false);
 
-  let metrics = $state<CaptureMetrics | null>(null);
+  async function refresh(): Promise<void> {
+    try {
+      view = await invoke<SettingsView>("get_settings_view");
+      printConflict = view.printScreenConflict;
+    } catch (cause) {
+      error = message(cause);
+    }
+  }
 
   onMount(() => {
-    let unlisten: (() => void) | undefined;
-    let disposed = false;
-    void listen<CaptureMetrics>("capture:metrics", (event) => {
-      metrics = event.payload;
-    }).then((dispose) => {
-      if (disposed) dispose();
-      else unlisten = dispose;
-    });
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
+    void refresh();
+    const onFocus = () => void refresh();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
   });
 
-  const duration = (value: number) => `${value.toFixed(1)} ms`;
+  async function recordingChanged(recording: boolean): Promise<void> {
+    try {
+      await invoke("suspend_shortcuts", { suspend: recording });
+    } catch (cause) {
+      error = message(cause);
+    }
+  }
+
+  async function saveShortcut(kind: "capture" | "history", shortcut: string): Promise<void> {
+    error = "";
+    captureError = "";
+    historyError = "";
+    try {
+      const settings = await invoke<Settings>("set_shortcut", { kind, value: shortcut });
+      if (view) view.settings = settings;
+      await refresh();
+    } catch (cause) {
+      if (kind === "capture") captureError = message(cause);
+      else historyError = message(cause);
+    }
+  }
+
+  async function setAutostart(event: Event): Promise<void> {
+    const enabled = (event.currentTarget as HTMLInputElement).checked;
+    try {
+      await invoke("set_autostart", { enabled });
+      if (view) view.autostart = enabled;
+    } catch (cause) {
+      error = message(cause);
+      await refresh();
+    }
+  }
+
+  async function chooseFolder(): Promise<void> {
+    try {
+      const folder = await invoke<string | null>("pick_save_folder");
+      if (folder && view) view.settings.saveFolder = folder;
+    } catch (cause) {
+      error = message(cause);
+    }
+  }
+
+  async function resetFolder(): Promise<void> {
+    try {
+      await invoke("reset_save_folder");
+      if (view) view.settings.saveFolder = null;
+    } catch (cause) {
+      error = message(cause);
+    }
+  }
+
+  async function openSaveFolder(): Promise<void> {
+    try {
+      await invoke("open_save_folder");
+    } catch (cause) {
+      error = message(cause);
+    }
+  }
+
+  async function completeOnboarding(): Promise<void> {
+    busy = true;
+    try {
+      await invoke("complete_onboarding");
+      if (view) view.settings.onboardingDone = true;
+    } catch (cause) {
+      error = message(cause);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function checkPrintScreen(): Promise<void> {
+    try {
+      printConflict = await invoke<boolean | null>("check_print_screen");
+    } catch (cause) {
+      error = message(cause);
+    }
+  }
+
+  async function openKeyboardSettings(): Promise<void> {
+    try {
+      await invoke("open_keyboard_settings");
+    } catch (cause) {
+      error = message(cause);
+    }
+  }
+
+  function message(cause: unknown): string {
+    return cause instanceof Error ? cause.message : String(cause);
+  }
+
+  function shortPath(path: string): string {
+    if (path.length < 54) return path;
+    return `…${path.slice(-51)}`;
+  }
+
+  function shortcutTokens(shortcut: string): string[] {
+    return shortcut.split("+").map((token) =>
+      token === "PrintScreen" ? "Print Screen" : token === "Super" ? "Win" : token,
+    );
+  }
+
+  function usesPrintScreen(shortcut: string): boolean {
+    return shortcut.toLowerCase().includes("printscreen");
+  }
 </script>
 
 <svelte:head>
-  <title>KeepShot · Capture</title>
-  <meta name="description" content="KeepShot multi-monitor capture spike" />
+  <title>KeepShot Settings</title>
+  <meta name="description" content="Configure KeepShot shortcuts and saving." />
 </svelte:head>
 
 <main>
-  <header class="topbar">
+  <header>
     <div class="brand-mark" aria-hidden="true">K</div>
-    <div class="brand-copy">
-      <span class="eyebrow">LOCAL SCREEN CAPTURE</span>
-      <h1>KeepShot</h1>
+    <div>
+      <p class="eyebrow">KEEPSHOT</p>
+      <h1>Settings</h1>
     </div>
-    <div class="status"><span></span> Ready</div>
+    <span class="status"><i></i> Running in tray</span>
   </header>
 
-  <section class="hero">
-    <div class="hero-copy">
-      <p class="eyebrow">MULTI-MONITOR SPIKE</p>
-      <h2>Capture your whole workspace.</h2>
-      <p class="description">A frozen frame is prepared for every display inside one overlay, aligned to physical pixels.</p>
-      <div class="shortcut-hint"><span>Press</span><kbd>Ctrl</kbd><b>+</b><kbd>Shift</kbd><b>+</b><kbd>X</kbd><span>to capture</span></div>
-    </div>
-    <div class="hero-art" aria-hidden="true">
-      <div class="screen screen-back"></div>
-      <div class="screen screen-front"><i></i><i></i><i></i><strong></strong></div>
-      <div class="reticle">＋</div>
-      <div class="art-chip">PIXEL ALIGNED</div>
-    </div>
-  </section>
-
-  <section class="metrics-panel" aria-label="Latest capture metrics">
-    <div class="section-heading">
-      <div>
-        <p class="eyebrow">CAPTURE TELEMETRY</p>
-        <h2>Latest session</h2>
-      </div>
-      {#if metrics}
-        <div class="session-id">SESSION <span>{metrics.session}</span></div>
-      {:else}
-        <div class="awaiting"><span></span> Waiting for first capture</div>
-      {/if}
-    </div>
-
-    {#if metrics}
-      <div class="summary-grid">
-        <div class="summary-card"><span>Capture + prepare</span><strong>{duration(metrics.captureTotalMs)}</strong></div>
-        <div class="summary-card"><span>Frame event emitted</span><strong>{duration(metrics.emitMs)}</strong></div>
-        <div class="summary-card"><span>Overlay shown</span><strong>{duration(metrics.shownMs)}</strong></div>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr><th>Monitor</th><th>Physical bounds</th><th>Scale</th><th>Capture</th><th>Prepare</th><th>Load</th><th>Paint</th></tr>
-          </thead>
-          <tbody>
-            {#each metrics.monitors as monitor (monitor.label)}
-              <tr>
-                <td><strong>{monitor.name}</strong><small>{monitor.label}</small></td>
-                <td class="mono">{monitor.x}, {monitor.y} · {monitor.width} × {monitor.height}</td>
-                <td class="mono">{monitor.scaleFactor.toFixed(2)}×</td>
-                <td class="mono">{duration(monitor.captureMs)}</td>
-                <td class="mono">{duration(monitor.prepareMs)}</td>
-                <td class="mono">{duration(monitor.loadMs)}</td>
-                <td class="mono">{duration(monitor.paintMs)}</td>
-              </tr>
+  {#if error}<p class="error-banner" role="alert">{error}</p>{/if}
+  {#if !view}
+    <p class="loading">Loading settings…</p>
+  {:else}
+    {#if !view.settings.onboardingDone}
+      <section class="onboarding panel">
+        <div class="section-title"><span>01</span><h2>Welcome to KeepShot</h2></div>
+        <p>KeepShot stays in your system tray. Use these shortcuts to capture your screen or open History.</p>
+        <div class="onboarding-shortcuts">
+          <span>Capture</span>
+          <span class="keycaps">
+            {#each shortcutTokens(view.settings.captureShortcut) as token, index (index)}
+              {#if index > 0}<b>+</b>{/if}<kbd>{token}</kbd>
             {/each}
-          </tbody>
-        </table>
-      </div>
-    {:else}
-      <div class="empty-state">
-        <div class="empty-icon">⌖</div>
-        <strong>No capture yet</strong>
-        <span>Press the shortcut to capture every connected display.</span>
-      </div>
+          </span>
+          <span>History</span>
+          <span class="keycaps">
+            {#each shortcutTokens(view.settings.historyShortcut) as token, index (index)}
+              {#if index > 0}<b>+</b>{/if}<kbd>{token}</kbd>
+            {/each}
+          </span>
+        </div>
+        {#if usesPrintScreen(view.settings.captureShortcut) && printConflict === true}
+          <div class="warning">
+            <strong>Windows is using Print Screen to open Snipping Tool</strong>
+            <p>
+              Settings › Accessibility › Keyboard › turn off “Use the Print screen key to open
+              screen capture”.
+            </p>
+            <div class="warning-actions">
+              <button class="secondary" onclick={openKeyboardSettings}>Open keyboard settings</button>
+              <button class="text-button" onclick={checkPrintScreen}>Check again</button>
+            </div>
+          </div>
+        {:else if usesPrintScreen(view.settings.captureShortcut) && printConflict === false}
+          <p class="success">✓ Print Screen is ready for KeepShot.</p>
+        {/if}
+        <button class="primary got-it" disabled={busy} onclick={completeOnboarding}>Got it</button>
+      </section>
     {/if}
-  </section>
-  <footer><span>Frames stay on this device</span><span>ESC closes the capture overlay</span></footer>
+
+    <section class="panel">
+      <div class="section-title"><span>01</span><h2>Shortcuts</h2></div>
+      {#each view.shortcutErrors as shortcutError (shortcutError)}
+        <p class="inline-error">{shortcutError}</p>
+      {/each}
+      <div class="shortcut-row">
+        <div><strong>Capture</strong><small>Start a screen capture</small></div>
+        <ShortcutRecorder
+          value={view.settings.captureShortcut}
+          onCommit={(value) => saveShortcut("capture", value)}
+          onRecordingChange={recordingChanged}
+        />
+      </div>
+      {#if captureError}<p class="inline-error">{captureError}</p>{/if}
+      <div class="shortcut-row">
+        <div><strong>History</strong><small>Open your recent captures</small></div>
+        <ShortcutRecorder
+          value={view.settings.historyShortcut}
+          onCommit={(value) => saveShortcut("history", value)}
+          onRecordingChange={recordingChanged}
+        />
+      </div>
+      {#if historyError}<p class="inline-error">{historyError}</p>{/if}
+      {#if usesPrintScreen(view.settings.captureShortcut) && printConflict === true}
+        <div class="compact-warning">
+          <span>Windows is using Print Screen to open Snipping Tool.</span>
+          <button class="text-button" onclick={openKeyboardSettings}>Open keyboard settings</button>
+        </div>
+      {/if}
+    </section>
+
+    <section class="panel">
+      <div class="section-title"><span>02</span><h2>Saving</h2></div>
+      <div class="folder-row">
+        <div class="folder-copy">
+          <strong>Save folder</strong>
+          <span title={view.settings.saveFolder ?? view.defaultSaveFolder}>
+            {shortPath(view.settings.saveFolder ?? view.defaultSaveFolder)}
+          </span>
+        </div>
+        <button class="secondary" onclick={chooseFolder}>Change…</button>
+        <button class="secondary" onclick={openSaveFolder}>Open</button>
+      </div>
+      {#if view.settings.saveFolder}
+        <button class="text-button reset" onclick={resetFolder}>Reset to default</button>
+      {/if}
+    </section>
+
+    <section class="panel startup-panel">
+      <div class="section-title"><span>03</span><h2>Startup</h2></div>
+      <label class="toggle-row">
+        <span>
+          <strong>Start KeepShot with Windows</strong>
+          <small>Keep shortcuts available after sign-in</small>
+        </span>
+        <input type="checkbox" checked={view.autostart} onchange={setAutostart} />
+        <i class="switch"></i>
+      </label>
+    </section>
+
+    <details class="panel diagnostics">
+      <summary>
+        <span class="section-title"><span>04</span><h2>Diagnostics</h2></span>
+        <span class="chevron">⌄</span>
+      </summary>
+      <Diagnostics />
+    </details>
+  {/if}
+  <footer>Frames and history stay on this device.</footer>
 </main>
 
 <style>
-  main {
-    width: min(1040px, calc(100% - 64px));
-    min-height: 100vh;
-    margin: 0 auto;
-    padding: 28px 0 22px;
-    display: flex;
-    flex-direction: column;
-    gap: 28px;
+  :global(html), :global(body) {
+    min-width: 480px;
+    min-height: 100%;
+    margin: 0;
+    background: var(--color-surface);
   }
-
-  .topbar,
-  .section-heading,
-  footer {
+  main {
+    width: min(520px, calc(100% - 36px));
+    margin: 0 auto;
+    padding: 24px 0 20px;
+    color: var(--color-text);
+  }
+  header {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-  }
-
-  .topbar {
-    justify-content: flex-start;
     gap: 12px;
+    margin-bottom: 20px;
   }
-
   .brand-mark {
     display: grid;
     place-items: center;
-    width: 36px;
-    height: 36px;
-    border-radius: 11px;
+    width: 38px;
+    height: 38px;
+    border-radius: 12px;
+    background: linear-gradient(145deg, #818cf8, var(--color-primary-hover));
     color: white;
     font-weight: 700;
-    background: linear-gradient(145deg, #818cf8, var(--color-primary-hover));
     box-shadow: 0 6px 18px #6366f144;
   }
-
-  .brand-copy h1 {
-    margin: 2px 0 0;
-    font-size: 15px;
-    line-height: 18px;
-  }
-
   .eyebrow {
-    margin: 0;
+    margin: 0 0 3px;
     color: var(--color-text-muted);
-    font: 600 10px/1.2 var(--font-mono);
-    letter-spacing: 0.1em;
+    font: 600 9px/1.2 var(--font-mono);
+    letter-spacing: 0.12em;
   }
-
-  .status,
-  .awaiting {
+  h1 {
+    margin: 0;
+    color: var(--color-text-strong);
+    font-size: 18px;
+    line-height: 24px;
+  }
+  .status {
     display: flex;
     align-items: center;
-    gap: 8px;
-    color: var(--color-text-variant);
-    font-size: 12px;
-  }
-
-  .status {
+    gap: 7px;
     margin-left: auto;
-    padding: 7px 11px;
-    border: 1px solid var(--color-divider);
-    border-radius: var(--radius-full);
-    background: var(--color-surface-low);
+    color: var(--color-text-muted);
+    font-size: 11px;
   }
-
-  .status span,
-  .awaiting span {
+  .status i {
     width: 7px;
     height: 7px;
     border-radius: 50%;
     background: var(--color-success);
-    box-shadow: 0 0 10px #10b98188;
+    box-shadow: 0 0 9px #10b98188;
   }
-
-  .hero {
-    position: relative;
-    display: flex;
-    align-items: center;
-    min-height: 244px;
-    overflow: hidden;
-    padding: 34px 40px;
-    border: 1px solid var(--color-glass-rim);
-    border-radius: 20px;
-    background:
-      radial-gradient(ellipse at 85% 30%, #6366f11e, transparent 42%),
-      linear-gradient(120deg, #1b1b20, #17171c);
-    box-shadow: var(--shadow-l1);
-  }
-
-  .hero-copy {
-    z-index: 1;
-    max-width: 510px;
-  }
-
-  .hero h2 {
-    margin: 13px 0 8px;
-    color: var(--color-text-strong);
-    font-size: 28px;
-    line-height: 1.2;
-    letter-spacing: -0.03em;
-  }
-
-  .description {
-    max-width: 420px;
-    margin: 0;
-    color: var(--color-text-muted);
-    font-size: 13px;
-    line-height: 1.6;
-  }
-
-  .shortcut-hint {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-top: 20px;
-    color: var(--color-text-variant);
-    font-size: 12px;
-  }
-
-  kbd {
-    min-width: 23px;
-    padding: 4px 7px;
-    border: 1px solid var(--color-glass-rim);
-    border-radius: 5px;
-    background: rgba(255, 255, 255, 0.07);
-    color: white;
-    font: 600 10px var(--font-sans);
-    text-align: center;
-    box-shadow: inset 0 1px #ffffff12;
-  }
-
-  .shortcut-hint b {
-    color: #71717a;
-    font-weight: 400;
-  }
-
-  .hero-art {
-    position: absolute;
-    top: 25px;
-    right: 42px;
-    width: 330px;
-    height: 194px;
-    opacity: 0.9;
-  }
-
-  .screen {
-    position: absolute;
-    width: 210px;
-    height: 134px;
-    border: 1px solid #ffffff35;
-    border-radius: 11px;
-    background: linear-gradient(135deg, #272833, #1a1b22);
-    box-shadow: 0 18px 30px #0005;
-  }
-
-  .screen-back {
-    top: 5px;
-    right: 9px;
-    transform: rotate(7deg);
-    background: linear-gradient(135deg, #272c3a, #1a1c25);
-  }
-
-  .screen-front {
-    bottom: 6px;
-    left: 9px;
-    padding: 19px 15px;
-    border-color: #818cf877;
-    box-shadow: 0 0 0 1px #6366f125, 0 18px 35px #0007;
-  }
-
-  .screen-front i {
-    display: block;
-    width: 68%;
-    height: 5px;
-    margin-bottom: 8px;
-    border-radius: 4px;
-    background: #ffffff12;
-  }
-
-  .screen-front i:nth-child(2) {
-    width: 90%;
-  }
-
-  .screen-front i:nth-child(3) {
-    width: 52%;
-  }
-
-  .screen-front strong {
-    display: block;
-    width: 50px;
-    height: 30px;
-    margin-top: 14px;
-    border: 1px solid #818cf8aa;
-    border-radius: 3px;
-    background: #6366f114;
-  }
-
-  .reticle {
-    position: absolute;
-    top: 76px;
-    right: 93px;
-    display: grid;
-    place-items: center;
-    width: 28px;
-    height: 28px;
-    border: 1px solid #38bdf899;
-    border-radius: 50%;
-    background: #10151bcc;
-    color: #7dd3fc;
-    font: 20px/1 var(--font-mono);
-  }
-
-  .art-chip {
-    position: absolute;
-    right: -2px;
-    bottom: -1px;
-    padding: 6px 8px;
-    border: 1px solid var(--color-glass-rim);
-    border-radius: 5px;
-    background: var(--color-glass);
-    color: #a5b4fc;
-    font: 9px var(--font-mono);
-    letter-spacing: 0.05em;
-  }
-
-  .metrics-panel {
-    overflow: hidden;
+  .panel {
+    margin: 0 0 12px;
+    padding: 15px 16px;
     border: 1px solid var(--color-glass-ambient);
-    border-radius: 16px;
+    border-radius: 12px;
     background: var(--color-surface-low);
     box-shadow: var(--shadow-l1);
   }
-
-  .section-heading {
-    min-height: 76px;
-    padding: 17px 22px;
-    border-bottom: 1px solid var(--color-divider);
+  .section-title {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    margin-bottom: 11px;
   }
-
-  .section-heading h2 {
-    margin: 5px 0 0;
-    color: var(--color-text-strong);
-    font-size: 16px;
-  }
-
-  .session-id {
-    color: var(--color-text-muted);
+  .section-title > span {
+    color: #818cf8;
     font: 10px var(--font-mono);
   }
-
-  .session-id span {
-    margin-left: 5px;
-    color: #a5b4fc;
+  h2 {
+    margin: 0;
+    color: var(--color-text-strong);
+    font-size: 13px;
+    font-weight: 600;
   }
-
-  .summary-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 10px;
-    padding: 16px 20px 14px;
-  }
-
-  .summary-card {
-    display: grid;
-    gap: 7px;
-    padding: 12px 14px;
-    border: 1px solid var(--color-divider);
-    border-radius: 9px;
-    background: rgba(255, 255, 255, 0.025);
-  }
-
-  .summary-card span {
+  .onboarding > p {
+    margin: 0 0 12px;
     color: var(--color-text-muted);
-    font-size: 11px;
+    font-size: 12px;
+    line-height: 1.5;
   }
-
-  .summary-card strong {
-    color: white;
-    font: 500 16px var(--font-mono);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .table-wrap {
-    overflow-x: auto;
-    padding: 0 20px 16px;
-  }
-
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    text-align: left;
-    white-space: nowrap;
-  }
-
-  th {
-    padding: 10px 12px;
-    color: var(--color-text-muted);
-    font: 600 10px var(--font-mono);
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-  }
-
-  td {
-    padding: 12px;
-    border-top: 1px solid var(--color-divider);
+  .onboarding-shortcuts {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 8px 12px;
+    align-items: center;
     color: var(--color-text-variant);
+    font-size: 12px;
+  }
+  .keycaps {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .keycaps b {
+    color: var(--color-text-muted);
+    font-size: 9px;
+    font-weight: 400;
+  }
+  kbd {
+    padding: 4px 7px;
+    border: 1px solid var(--color-glass-rim);
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.08);
+    color: white;
+    font: 600 10px var(--font-mono);
+  }
+  button {
+    border: 0;
+    font: inherit;
+    cursor: pointer;
+  }
+  .primary, .secondary {
+    min-height: 32px;
+    padding: 0 11px;
+    border-radius: 7px;
     font-size: 11px;
+    font-weight: 600;
   }
-
-  td strong,
-  td small {
-    display: block;
+  .primary {
+    background: var(--color-primary);
+    color: white;
   }
-
-  td strong {
+  .primary:hover {
+    background: var(--color-primary-hover);
+  }
+  .primary:disabled {
+    opacity: 0.6;
+  }
+  .secondary {
+    border: 1px solid var(--color-divider);
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--color-text);
+  }
+  .secondary:hover {
+    background: rgba(255, 255, 255, 0.12);
+  }
+  .got-it {
+    margin-top: 14px;
+  }
+  .shortcut-row, .folder-row, .toggle-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+  }
+  .shortcut-row + .shortcut-row {
+    border-top: 1px solid var(--color-divider);
+  }
+  .shortcut-row > div:first-child {
+    display: grid;
+    gap: 3px;
+    flex: 1;
+  }
+  strong {
     color: var(--color-text);
     font-size: 12px;
     font-weight: 500;
   }
-
-  td small {
-    margin-top: 4px;
+  small {
+    color: var(--color-text-muted);
+    font-size: 10px;
+  }
+  .folder-row {
+    align-items: center;
+  }
+  .folder-copy {
+    display: grid;
+    flex: 1;
+    min-width: 0;
+    gap: 4px;
+  }
+  .folder-copy span {
+    overflow: hidden;
     color: var(--color-text-muted);
     font: 10px var(--font-mono);
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-
-  .mono {
-    color: #d4d4d8;
-    font: 10px var(--font-mono);
-    font-variant-numeric: tabular-nums;
+  .text-button {
+    padding: 5px 2px;
+    background: transparent;
+    color: #a5b4fc;
+    font-size: 11px;
   }
-
-  .empty-state {
+  .text-button:hover {
+    color: white;
+  }
+  .reset {
+    margin-top: 5px;
+  }
+  .toggle-row {
+    position: relative;
+    justify-content: space-between;
+    cursor: pointer;
+  }
+  .toggle-row > span {
     display: grid;
-    justify-items: center;
-    gap: 8px;
-    padding: 38px 20px 42px;
+    gap: 4px;
+  }
+  .toggle-row input {
+    position: absolute;
+    right: 0;
+    width: 38px;
+    height: 22px;
+    opacity: 0;
+    cursor: pointer;
+  }
+  .switch {
+    width: 36px;
+    height: 20px;
+    border: 1px solid var(--color-glass-rim);
+    border-radius: 99px;
+    background: var(--color-surface-high);
+    transition: 120ms ease;
+  }
+  .switch::after {
+    display: block;
+    width: 14px;
+    height: 14px;
+    margin: 2px;
+    border-radius: 50%;
+    background: #a1a1aa;
+    content: "";
+    transition: 120ms ease;
+  }
+  .toggle-row input:checked + .switch {
+    border-color: var(--color-primary);
+    background: var(--color-primary);
+  }
+  .toggle-row input:checked + .switch::after {
+    transform: translateX(16px);
+    background: white;
+  }
+  .toggle-row input:focus-visible + .switch {
+    outline: 2px solid #a5b4fc;
+    outline-offset: 2px;
+  }
+  .diagnostics {
+    padding-bottom: 12px;
+  }
+  .diagnostics summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    cursor: pointer;
+    list-style: none;
+  }
+  .diagnostics summary::-webkit-details-marker {
+    display: none;
+  }
+  .diagnostics summary .section-title {
+    margin-bottom: 0;
+  }
+  .chevron {
+    color: var(--color-text-muted);
+    transition: transform 120ms ease;
+  }
+  .diagnostics[open] .chevron {
+    transform: rotate(180deg);
+  }
+  .warning, .compact-warning {
+    margin-top: 12px;
+    padding: 10px;
+    border: 1px solid #f59e0b55;
+    border-radius: 8px;
+    background: #f59e0b12;
+    color: #fcd34d;
+    font-size: 11px;
+  }
+  .warning p {
+    margin: 6px 0;
+    color: var(--color-text-variant);
+    line-height: 1.45;
+  }
+  .warning-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .compact-warning {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  .success {
+    color: var(--color-success) !important;
+  }
+  .inline-error, .error-banner {
+    margin: 5px 0;
+    color: var(--color-danger);
+    font-size: 11px;
+  }
+  .error-banner {
+    padding: 9px 12px;
+    border: 1px solid #ef444455;
+    border-radius: 8px;
+    background: #ef444412;
+  }
+  .loading {
     color: var(--color-text-muted);
     font-size: 12px;
   }
-
-  .empty-state strong {
-    color: var(--color-text-variant);
-    font-size: 13px;
-    font-weight: 500;
-  }
-
-  .empty-icon {
-    display: grid;
-    place-items: center;
-    width: 34px;
-    height: 34px;
-    margin-bottom: 3px;
-    border: 1px solid #0ea5e944;
-    border-radius: 10px;
-    color: var(--color-precision);
-    font-size: 19px;
-  }
-
   footer {
-    margin-top: auto;
-    color: #71717a;
-    font: 10px var(--font-mono);
-  }
-
-  @media (max-width: 760px) {
-    main {
-      width: calc(100% - 32px);
-      padding-top: 18px;
-      gap: 18px;
-    }
-
-    .hero {
-      min-height: 230px;
-      padding: 26px 22px;
-    }
-
-    .hero h2 {
-      max-width: 350px;
-      font-size: 24px;
-    }
-
-    .hero-art {
-      right: -100px;
-      opacity: 0.32;
-    }
-
-    .summary-grid {
-      grid-template-columns: 1fr;
-    }
-
-    .section-heading {
-      align-items: flex-start;
-      flex-direction: column;
-      gap: 10px;
-    }
-
-    footer {
-      flex-wrap: wrap;
-      gap: 12px;
-    }
+    padding: 5px 2px;
+    color: var(--color-text-muted);
+    font-size: 10px;
   }
 </style>

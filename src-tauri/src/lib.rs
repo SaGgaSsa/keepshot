@@ -3,30 +3,34 @@ mod frames;
 mod history;
 mod output;
 mod overlay;
+mod platform;
+mod settings;
+mod tray;
 
 use std::fs;
 use std::time::Instant;
 use tauri::{Emitter, Manager};
+use tauri_plugin_autostart::ManagerExt as AutostartManagerExt;
 use tauri_plugin_clipboard_manager::ClipboardExt;
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
-
-const CAPTURE_SHORTCUT_MODIFIERS: Modifiers = Modifiers::CONTROL.union(Modifiers::SHIFT);
-const CAPTURE_SHORTCUT_CODE: Code = Code::KeyX;
-
-fn capture_shortcut() -> Shortcut {
-    Shortcut::new(Some(CAPTURE_SHORTCUT_MODIFIERS), CAPTURE_SHORTCUT_CODE)
-}
-
-fn history_shortcut() -> Shortcut {
-    Shortcut::new(Some(Modifiers::CONTROL), Code::PrintScreen)
-}
+use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(frames::FrameStore::default())
         .manage(overlay::OverlayRegistry::default())
+        .manage(settings::SettingsState::default())
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            tray::show_settings(app);
+        }))
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--autostart"]),
+        ))
+        .plugin(tauri_plugin_dialog::init())
         .register_asynchronous_uri_scheme_protocol("history", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
             let entry_id = request
@@ -88,11 +92,19 @@ pub fn run() {
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
-                    if shortcut == &capture_shortcut() && event.state() == ShortcutState::Pressed {
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+                    let state = app.state::<settings::SettingsState>();
+                    let suspended = state.suspended.lock().map(|value| *value).unwrap_or(true);
+                    if suspended {
+                        return;
+                    }
+                    let capture = state.capture.lock().ok().and_then(|value| *value);
+                    let history = state.history.lock().ok().and_then(|value| *value);
+                    if capture.as_ref() == Some(shortcut) {
                         start_capture(app.clone());
-                    } else if shortcut == &history_shortcut()
-                        && event.state() == ShortcutState::Pressed
-                    {
+                    } else if history.as_ref() == Some(shortcut) {
                         if let Err(error) = overlay::toggle_history(app) {
                             eprintln!("Could not toggle history panel: {error}");
                         }
@@ -112,12 +124,47 @@ pub fn run() {
             history_save,
             history_delete,
             history_edit,
-            history_close
+            history_close,
+            get_settings_view,
+            set_shortcut,
+            suspend_shortcuts,
+            set_autostart,
+            pick_save_folder,
+            reset_save_folder,
+            open_save_folder,
+            open_keyboard_settings,
+            check_print_screen,
+            complete_onboarding
         ])
         .setup(|app| {
-            app.global_shortcut().register(capture_shortcut())?;
-            if let Err(error) = app.global_shortcut().register(history_shortcut()) {
-                eprintln!("Could not register history shortcut: {error}");
+            initialize_settings(app.handle());
+            if let Err(error) = tray::build(app.handle(), start_capture) {
+                eprintln!("Could not initialize system tray: {error}");
+            }
+            if let Some(window) = app.get_webview_window("main") {
+                let settings_window = window.clone();
+                let settings_app = app.handle().clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        if let Err(error) = set_shortcuts_suspended(&settings_app, false) {
+                            eprintln!("Could not resume shortcuts: {error}");
+                        }
+                        if let Err(error) = settings_window.hide() {
+                            eprintln!("Could not hide settings window: {error}");
+                        }
+                    }
+                });
+            }
+            let autostart = std::env::args().any(|argument| argument == "--autostart");
+            let state = app.state::<settings::SettingsState>();
+            let onboarding_done = state
+                .values
+                .lock()
+                .map(|value| value.onboarding_done)
+                .unwrap_or(true);
+            if !autostart && !onboarding_done {
+                tray::show_settings(app.handle());
             }
             match app.path().app_local_data_dir() {
                 Ok(root) => {
@@ -232,11 +279,7 @@ async fn save_selection(
     let payload = selection_request_parts(&request)?;
     state.validate_history_target(payload.history_id.as_deref())?;
     let (session, bounds, frames) = state.snapshot()?;
-    let directory = app
-        .path()
-        .picture_dir()
-        .map_err(|error| format!("Could not find the Pictures folder: {error}"))?
-        .join("KeepShot");
+    let directory = save_folder(&app)?;
     let rect = payload.rect;
     let history_edit = payload.history_id.is_some();
     let composite = payload.composite.clone();
@@ -343,6 +386,277 @@ fn cursor_position(app: tauri::AppHandle) -> Result<CursorPosition, String> {
     })
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SettingsView {
+    settings: settings::Settings,
+    autostart: bool,
+    shortcut_errors: Vec<String>,
+    print_screen_conflict: Option<bool>,
+    default_save_folder: String,
+}
+
+#[tauri::command]
+fn get_settings_view(app: tauri::AppHandle) -> Result<SettingsView, String> {
+    let current = settings::snapshot(&app)?;
+    let state = app.state::<settings::SettingsState>();
+    let shortcut_errors = state
+        .shortcut_errors
+        .lock()
+        .map_err(|_| "Shortcut status is unavailable".to_string())?
+        .clone();
+    let autostart = app
+        .autolaunch()
+        .is_enabled()
+        .map_err(|error| format!("Could not read startup setting: {error}"))?;
+    let print_screen_conflict = if current
+        .capture_shortcut
+        .to_ascii_lowercase()
+        .contains("printscreen")
+    {
+        platform::snipping_tool_owns_print_screen()
+    } else {
+        None
+    };
+    Ok(SettingsView {
+        settings: current,
+        autostart,
+        shortcut_errors,
+        print_screen_conflict,
+        default_save_folder: default_save_folder(&app)?.display().to_string(),
+    })
+}
+
+#[tauri::command]
+fn set_shortcut(
+    app: tauri::AppHandle,
+    kind: String,
+    value: String,
+) -> Result<settings::Settings, String> {
+    let mut current = settings::snapshot(&app)?;
+    let parsed = settings::shortcut(&value)?;
+    let (old_value, slot) = match kind.as_str() {
+        "capture" => (current.capture_shortcut.clone(), "capture"),
+        "history" => (current.history_shortcut.clone(), "history"),
+        _ => return Err("Shortcut kind must be capture or history".to_string()),
+    };
+    let other_value = if slot == "capture" {
+        &current.history_shortcut
+    } else {
+        &current.capture_shortcut
+    };
+    if settings::shortcut(other_value)? == parsed {
+        return Err("Capture and history shortcuts must be different".to_string());
+    }
+    let manager = app.global_shortcut();
+    let is_suspended = app
+        .state::<settings::SettingsState>()
+        .suspended
+        .lock()
+        .map_err(|_| "Shortcut status is unavailable".to_string())?
+        .to_owned();
+    if !is_suspended {
+        if let Ok(old) = settings::shortcut(&old_value) {
+            let _ = manager.unregister(old);
+        }
+    }
+    if !is_suspended {
+        if let Err(error) = manager.register(parsed) {
+            if let Ok(old) = settings::shortcut(&old_value) {
+                if let Err(restore_error) = manager.register(old) {
+                    eprintln!("Could not restore previous shortcut: {restore_error}");
+                } else {
+                    let state = app.state::<settings::SettingsState>();
+                    set_shortcut_slot(&state, slot, Some(old));
+                }
+            }
+            return Err(settings::registration_error(&error.to_string()));
+        }
+    }
+    if slot == "capture" {
+        current.capture_shortcut = value;
+    } else {
+        current.history_shortcut = value;
+    }
+    if let Err(error) = settings::update(&app, current.clone()) {
+        if !is_suspended {
+            let _ = manager.unregister(parsed);
+            if let Ok(old) = settings::shortcut(&old_value) {
+                let _ = manager.register(old);
+                set_shortcut_slot(&app.state::<settings::SettingsState>(), slot, Some(old));
+            }
+        }
+        return Err(error);
+    }
+    let updated = settings::shortcut(if slot == "capture" {
+        &current.capture_shortcut
+    } else {
+        &current.history_shortcut
+    })?;
+    set_shortcut_slot(&app.state::<settings::SettingsState>(), slot, Some(updated));
+    if let Ok(mut errors) = app
+        .state::<settings::SettingsState>()
+        .shortcut_errors
+        .lock()
+    {
+        errors.retain(|error| !error.starts_with(slot));
+    }
+    if let Err(error) = tray::update_menu(&app) {
+        eprintln!("Could not refresh tray menu: {error}");
+    }
+    Ok(current)
+}
+
+fn set_shortcut_slot(state: &settings::SettingsState, slot: &str, shortcut: Option<Shortcut>) {
+    let target = if slot == "capture" {
+        &state.capture
+    } else {
+        &state.history
+    };
+    if let Ok(mut value) = target.lock() {
+        *value = shortcut;
+    }
+}
+
+#[tauri::command]
+fn suspend_shortcuts(app: tauri::AppHandle, suspend: bool) -> Result<(), String> {
+    set_shortcuts_suspended(&app, suspend)
+}
+
+fn set_shortcuts_suspended(app: &tauri::AppHandle, suspend: bool) -> Result<(), String> {
+    let state = app.state::<settings::SettingsState>();
+    let mut suspended = state
+        .suspended
+        .lock()
+        .map_err(|_| "Shortcut status is unavailable".to_string())?;
+    if *suspended == suspend {
+        return Ok(());
+    }
+    let current = settings::snapshot(app)?;
+    let manager = app.global_shortcut();
+    let values = [current.capture_shortcut, current.history_shortcut];
+    if suspend {
+        for value in values {
+            if let Ok(shortcut) = settings::shortcut(&value) {
+                let _ = manager.unregister(shortcut);
+            }
+        }
+    } else {
+        let mut registered = Vec::new();
+        for value in values {
+            let shortcut = settings::shortcut(&value)?;
+            if let Err(error) = manager.register(shortcut) {
+                for previous in registered {
+                    let _ = manager.unregister(previous);
+                }
+                return Err(settings::registration_error(&error.to_string()));
+            }
+            registered.push(shortcut);
+        }
+    }
+    *suspended = suspend;
+    Ok(())
+}
+
+#[tauri::command]
+fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let manager = app.autolaunch();
+    if enabled {
+        manager.enable().map_err(|error| error.to_string())
+    } else {
+        manager.disable().map_err(|error| error.to_string())
+    }
+}
+
+#[tauri::command]
+async fn pick_save_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let dialog_app = app.clone();
+    let selected = tauri::async_runtime::spawn_blocking(move || {
+        dialog_app.dialog().file().blocking_pick_folder()
+    })
+    .await
+    .map_err(|error| format!("Folder picker failed: {error}"))?;
+    let Some(path) = selected else {
+        return Ok(None);
+    };
+    let folder = path
+        .into_path()
+        .map_err(|error| format!("Invalid folder: {error}"))?;
+    let mut current = settings::snapshot(&app)?;
+    current.save_folder = Some(folder.display().to_string());
+    settings::update(&app, current)?;
+    Ok(Some(folder.display().to_string()))
+}
+
+#[tauri::command]
+fn reset_save_folder(app: tauri::AppHandle) -> Result<(), String> {
+    let mut current = settings::snapshot(&app)?;
+    current.save_folder = None;
+    settings::update(&app, current)
+}
+
+#[tauri::command]
+fn open_save_folder(app: tauri::AppHandle) -> Result<(), String> {
+    let folder = save_folder(&app)?;
+    fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
+    platform::open_folder(&folder)
+}
+
+#[tauri::command]
+fn open_keyboard_settings() -> Result<(), String> {
+    platform::open_keyboard_settings()
+}
+
+#[tauri::command]
+fn check_print_screen(app: tauri::AppHandle) -> Option<bool> {
+    let settings = settings::snapshot(&app).ok()?;
+    if settings
+        .capture_shortcut
+        .to_ascii_lowercase()
+        .contains("printscreen")
+    {
+        platform::snipping_tool_owns_print_screen()
+    } else {
+        None
+    }
+}
+
+#[tauri::command]
+fn complete_onboarding(app: tauri::AppHandle) -> Result<(), String> {
+    let mut current = settings::snapshot(&app)?;
+    current.onboarding_done = true;
+    settings::update(&app, current)
+}
+
+fn default_save_folder(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(app
+        .path()
+        .picture_dir()
+        .map_err(|error| format!("Could not find the Pictures folder: {error}"))?
+        .join("KeepShot"))
+}
+
+fn save_folder(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    match settings::snapshot(app)?.save_folder {
+        Some(folder) => Ok(std::path::PathBuf::from(folder)),
+        None => default_save_folder(app),
+    }
+}
+
+fn initialize_settings(app: &tauri::AppHandle) {
+    let initial = match settings::load(app) {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("Could not load settings; defaults will be used: {error}");
+            settings::Settings::default()
+        }
+    };
+    if let Ok(mut current) = app.state::<settings::SettingsState>().values.lock() {
+        *current = initial;
+    }
+    settings::register_startup_shortcuts(app);
+}
+
 #[tauri::command]
 fn history_list(app: tauri::AppHandle) -> Result<Vec<history::HistoryItem>, String> {
     let root = app
@@ -375,11 +689,7 @@ async fn history_save(app: tauri::AppHandle, id: String) -> Result<String, Strin
         .map_err(|error| error.to_string())?
         .join("history");
     let image = history::load_final(&root, &id)?;
-    let directory = app
-        .path()
-        .picture_dir()
-        .map_err(|error| format!("Could not find the Pictures folder: {error}"))?
-        .join("KeepShot");
+    let directory = save_folder(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         fs::create_dir_all(&directory)
             .map_err(|error| format!("Could not create {}: {error}", directory.display()))?;
