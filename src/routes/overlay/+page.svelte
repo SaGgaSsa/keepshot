@@ -2,6 +2,22 @@
   import { onMount, tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+  import Toolbar from "$lib/overlay/Toolbar.svelte";
+  import {
+    annotationHandle,
+    createLayer,
+    hitTest,
+    isBox,
+    isSegment,
+    isText,
+    moveLayer,
+    resizeLayer,
+    type AnnotationTool,
+    type Layer,
+    type ResizeHandle,
+  } from "$lib/annotations/model";
+  import { renderLayers } from "$lib/annotations/render";
+  import { LayerHistory } from "$lib/annotations/history";
   import {
     actionBarPosition,
     clamp,
@@ -25,10 +41,13 @@
   type ImageTiming = { label: string; loadMs: number; paintMs: number };
   type Gesture = {
     pointerId: number;
-    mode: "draw" | "move" | "resize";
+    mode: "draw" | "move" | "resize" | "annotate" | "moveLayer" | "resizeLayer";
     start: PhysicalPoint;
     origin: PhysicalRect | null;
     handle?: string;
+    layerId?: string;
+    layerOrigin?: Layer;
+    tool?: AnnotationTool;
   };
 
   const handleNames = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
@@ -42,6 +61,20 @@
   let rootElement: HTMLElement;
   let loadSequence = 0;
   let noticeTimeout: ReturnType<typeof setTimeout> | undefined;
+  let annotationCanvas = $state<HTMLCanvasElement | undefined>(undefined);
+  let textEditor = $state<HTMLTextAreaElement | undefined>(undefined);
+  let layers = $state<Layer[]>([]);
+  let selectedLayerId = $state<string | null>(null);
+  let activeTool = $state<AnnotationTool>("select");
+  let activeColor = $state("#EF4444");
+  let strokeWidth = $state(5);
+  let editingTextId = $state<string | null>(null);
+  let editingText = $state("");
+  let editingPoint = $state<PhysicalPoint | null>(null);
+  let layerPreview = $state<Layer | null>(null);
+  let canUndo = $state(false);
+  let canRedo = $state(false);
+  const history = new LayerHistory();
 
   const visibleRect = $derived(gesture?.mode === "draw" ? previewRect : selection);
   const actionPosition = $derived.by(() => {
@@ -93,7 +126,9 @@
     if (!session) return "";
     const dpr = window.devicePixelRatio || 1;
     const point = physicalPointToCss({ x: rect.x, y: rect.y }, session.bounds, dpr);
-    return `left:${point.x}px;top:${point.y}px;width:${physicalToCss(rect.width, dpr)}px;height:${physicalToCss(rect.height, dpr)}px`;
+    const width = physicalToCss(rect.width, dpr);
+    const height = physicalToCss(rect.height, dpr);
+    return `left:${point.x}px;top:${point.y}px;width:${width}px;height:${height}px`;
   }
 
   function receiveFrames(next: OverlaySession) {
@@ -102,6 +137,18 @@
     const arrivedAt = performance.now();
     loading = true;
     selection = null;
+    layers = [];
+    selectedLayerId = null;
+    layerPreview = null;
+    gesture = null;
+    editingTextId = null;
+    editingPoint = null;
+    editingText = "";
+    activeTool = "select";
+    activeColor = "#EF4444";
+    strokeWidth = 5;
+    history.reset();
+    syncHistoryFlags();
     previewRect = null;
     session = next;
     void waitForFrames(next, sequence, arrivedAt);
@@ -112,7 +159,8 @@
     try {
       const timings = await Promise.all(
         next.monitors.map(async (monitor): Promise<ImageTiming> => {
-          const canvas = document.querySelector<HTMLCanvasElement>(`canvas[data-monitor-label="${CSS.escape(monitor.label)}"]`);
+          const selector = `canvas[data-monitor-label="${CSS.escape(monitor.label)}"]`;
+          const canvas = document.querySelector<HTMLCanvasElement>(selector);
           if (!canvas) throw new Error(`Frame canvas for ${monitor.label} was not mounted`);
           // Frames arrive as raw opaque RGBA, so painting skips image decoding entirely.
           const context = canvas.getContext("2d", { alpha: false });
@@ -129,7 +177,12 @@
               if (buffer.byteLength !== monitor.width * rows * 4) {
                 throw new Error(`Frame band for ${monitor.label} has an unexpected size`);
               }
-              context.putImageData(new ImageData(new Uint8ClampedArray(buffer), monitor.width, rows), 0, startRow);
+              const imageData = new ImageData(
+                new Uint8ClampedArray(buffer),
+                monitor.width,
+                rows,
+              );
+              context.putImageData(imageData, 0, startRow);
             }),
           );
           return {
@@ -156,6 +209,167 @@
     noticeTimeout = setTimeout(() => (notice = ""), 2600);
   }
 
+  function commitLayers(next: Layer[]) {
+    history.push(layers);
+    layers = next;
+    syncHistoryFlags();
+    drawAnnotations();
+  }
+
+  function syncHistoryFlags() { canUndo = history.canUndo; canRedo = history.canRedo; }
+
+  function selectedLayer(): Layer | undefined { return layers.find((layer) => layer.id === selectedLayerId); }
+
+  function drawAnnotations() {
+    if (!annotationCanvas || !session) return;
+    const dpr = window.devicePixelRatio || 1;
+    const width = Math.max(1, Math.round(window.innerWidth * dpr));
+    const height = Math.max(1, Math.round(window.innerHeight * dpr));
+    if (annotationCanvas.width !== width || annotationCanvas.height !== height) {
+      annotationCanvas.width = width;
+      annotationCanvas.height = height;
+    }
+    const ctx = annotationCanvas.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, width, height);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (selection) {
+      const left = (selection.x - session.bounds.x) / dpr;
+      const top = (selection.y - session.bounds.y) / dpr;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(left, top, selection.width / dpr, selection.height / dpr);
+      ctx.clip();
+      const visibleLayers = layerPreview ? [...layers, layerPreview] : layers;
+      renderLayers(ctx, visibleLayers, {
+        originX: session.bounds.x,
+        originY: session.bounds.y,
+        scale: 1 / dpr,
+      });
+      const selected = selectedLayer();
+      if (selected) drawLayerHandles(ctx, selected, dpr);
+      ctx.restore();
+    }
+  }
+
+  function drawLayerHandles(ctx: CanvasRenderingContext2D, layer: Layer, dpr: number) {
+    const originX = session?.bounds.x ?? 0;
+    const originY = session?.bounds.y ?? 0;
+    const toCanvasX = (value: number) => (value - originX) / dpr;
+    const toCanvasY = (value: number) => (value - originY) / dpr;
+    const anchors = isSegment(layer)
+      ? [layer.start, layer.end]
+      : isBox(layer)
+        ? [
+            { x: layer.x, y: layer.y },
+            { x: layer.x + layer.width / 2, y: layer.y },
+            { x: layer.x + layer.width, y: layer.y },
+            { x: layer.x + layer.width, y: layer.y + layer.height / 2 },
+            { x: layer.x + layer.width, y: layer.y + layer.height },
+            { x: layer.x + layer.width / 2, y: layer.y + layer.height },
+            { x: layer.x, y: layer.y + layer.height },
+            { x: layer.x, y: layer.y + layer.height / 2 },
+          ]
+        : [];
+
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.strokeStyle = "#6366F1";
+    ctx.fillStyle = "#fff";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+
+    if (isSegment(layer)) {
+      ctx.moveTo(toCanvasX(layer.start.x), toCanvasY(layer.start.y));
+      ctx.lineTo(toCanvasX(layer.end.x), toCanvasY(layer.end.y));
+    } else if (isBox(layer)) {
+      ctx.rect(
+        toCanvasX(layer.x),
+        toCanvasY(layer.y),
+        layer.width / dpr,
+        layer.height / dpr,
+      );
+    } else if (isText(layer)) {
+      const textWidth = Math.max(12, layer.text.length * layer.fontSize * 0.65);
+      ctx.rect(toCanvasX(layer.x), toCanvasY(layer.y), textWidth / dpr, layer.fontSize * 1.25 / dpr);
+    }
+
+    ctx.stroke();
+    for (const point of anchors) {
+      ctx.beginPath();
+      ctx.arc(toCanvasX(point.x), toCanvasY(point.y), 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function scheduleRender() { requestAnimationFrame(drawAnnotations); }
+
+  function constrainPoint(start: PhysicalPoint, point: PhysicalPoint, shift: boolean): PhysicalPoint {
+    if (!shift) return point;
+    const dx = point.x - start.x; const dy = point.y - start.y;
+    const angle = Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) * Math.PI / 4;
+    const length = Math.max(Math.abs(dx), Math.abs(dy));
+    return {
+      x: Math.round(start.x + Math.cos(angle) * length),
+      y: Math.round(start.y + Math.sin(angle) * length),
+    };
+  }
+
+  function appendLayerGesture(
+    start: PhysicalPoint,
+    end: PhysicalPoint,
+    tool: AnnotationTool,
+    shift: boolean,
+  ): Layer | null {
+    if (!session || distance(start, end) <= 3) return null;
+    const snapped = tool === "line" || tool === "arrow"
+      ? constrainPoint(start, end, shift)
+      : end;
+    let x = Math.min(start.x, snapped.x);
+    let y = Math.min(start.y, snapped.y);
+    let width = Math.abs(snapped.x - start.x);
+    let height = Math.abs(snapped.y - start.y);
+
+    if ((tool === "rect" || tool === "ellipse") && shift) {
+      const side = Math.max(width, height);
+      width = side;
+      height = side;
+      x = snapped.x < start.x ? start.x - side : start.x;
+      y = snapped.y < start.y ? start.y - side : start.y;
+    }
+
+    const base = { color: activeColor, strokeWidth };
+    if (tool === "arrow") {
+      return createLayer({ ...base, type: "arrow", start, end: snapped });
+    }
+    if (tool === "line") {
+      return createLayer({ ...base, type: "line", start, end: snapped });
+    }
+    if (tool === "rect") {
+      return createLayer({
+        ...base,
+        type: "rect",
+        x,
+        y,
+        width: Math.max(1, width),
+        height: Math.max(1, height),
+      });
+    }
+    if (tool === "ellipse") {
+      return createLayer({
+        ...base,
+        type: "ellipse",
+        x,
+        y,
+        width: Math.max(1, width),
+        height: Math.max(1, height),
+      });
+    }
+    return null;
+  }
+
   function pointerPoint(event: PointerEvent): PhysicalPoint {
     if (!session) return { x: 0, y: 0 };
     return cssPointToPhysical(
@@ -171,63 +385,188 @@
     const point = pointerPoint(event);
     const target = event.target instanceof HTMLElement ? event.target : null;
     const handle = target?.dataset.handle;
+    const regionHandle = handle && selection;
+    if (activeTool !== "select" && !regionHandle && (!selection || !contains(selection, point))) return;
+    const selected = selectedLayer();
+    const selectedHandle = activeTool === "select" && selected && selection && contains(selection, point)
+      ? annotationHandle(selected, point)
+      : null;
+    const hit = selectedHandle && selected
+      ? selected
+      : activeTool === "select" && selection && contains(selection, point)
+        ? [...layers].reverse().find((layer) => hitTest(layer, point))
+        : undefined;
     let mode: Gesture["mode"] = "draw";
-    if (handle && selection) mode = "resize";
-    else if (selection && contains(selection, point)) mode = "move";
-    gesture = { pointerId: event.pointerId, mode, start: point, origin: selection, handle };
+    if (regionHandle) mode = "resize";
+    else if (hit && activeTool === "select") {
+      selectedLayerId = hit.id;
+      activeColor = hit.color;
+      strokeWidth = hit.strokeWidth;
+      const annotationResize = selectedHandle && selected?.id === hit.id
+        ? selectedHandle
+        : annotationHandle(hit, point);
+      if (isText(hit) && event.detail >= 2) {
+        beginTextEdit(hit);
+        return;
+      }
+      mode = annotationResize ? "resizeLayer" : "moveLayer";
+      gesture = {
+        pointerId: event.pointerId,
+        mode,
+        start: point,
+        origin: selection,
+        layerId: hit.id,
+        layerOrigin: $state.snapshot(hit),
+        handle: annotationResize ?? undefined,
+      };
+      rootElement.setPointerCapture(event.pointerId);
+      scheduleRender();
+      return;
+    } else if (activeTool !== "select" && selection && contains(selection, point)) mode = "annotate";
+    else if (selection && contains(selection, point)) { selectedLayerId = null; mode = "move"; }
+    else { selectedLayerId = null; }
+    gesture = { pointerId: event.pointerId, mode, start: point, origin: selection, handle, tool: activeTool };
     rootElement.setPointerCapture(event.pointerId);
     if (mode === "draw") {
       selection = null;
       previewRect = { x: point.x, y: point.y, width: 1, height: 1 };
+    } else if (mode === "annotate" && activeTool === "text") {
+      gesture = null;
+      beginTextEdit(null, point);
+      event.preventDefault();
     }
+  }
+
+  function beginTextEdit(layer: Layer | null, point?: PhysicalPoint) {
+    if (!session) return;
+    const textLayer = layer && isText(layer) ? layer : null;
+    editingTextId = textLayer?.id ?? null;
+    if (!layer) selectedLayerId = null;
+    editingText = textLayer?.text ?? "";
+    editingPoint = textLayer ? { x: textLayer.x, y: textLayer.y } : point ?? null;
+    void tick().then(() => textEditor?.focus());
+  }
+
+  function finishTextEdit(cancel = false) {
+    const id = editingTextId; const point = editingPoint; const value = editingText;
+    editingTextId = null; editingPoint = null; editingText = "";
+    if (cancel || !point || !value.trim()) {
+      if (id && !cancel && !value.trim()) commitLayers(layers.filter((layer) => layer.id !== id));
+      return;
+    }
+    const oldLayer = id ? layers.find((item) => item.id === id) : undefined;
+    const oldTextLayer = oldLayer && isText(oldLayer) ? oldLayer : null;
+    const fontSize = oldTextLayer?.fontSize
+      ?? (strokeWidth === 3 ? 16 : strokeWidth === 5 ? 24 : 36);
+    const textLayer = createLayer({
+      type: "text",
+      color: oldLayer?.color ?? activeColor,
+      strokeWidth: oldLayer?.strokeWidth ?? strokeWidth,
+      x: point.x,
+      y: point.y,
+      text: value,
+      fontSize,
+    });
+    const savedLayer = id ? { ...textLayer, id } : textLayer;
+    if (isText(savedLayer)) {
+      if (id) commitLayers(layers.map((item) => item.id === id ? savedLayer : item));
+      else commitLayers([...layers, savedLayer]);
+    } else {
+      commitLayers([...layers, savedLayer]);
+    }
+    selectedLayerId = savedLayer.id;
   }
 
   function onPointerMove(event: PointerEvent) {
     if (!session) return;
     const point = pointerPoint(event);
-    if (!gesture) {
+    const currentGesture = gesture;
+    if (!currentGesture) {
       const target = event.target instanceof HTMLElement ? event.target : null;
-      if (!target?.dataset.handle) rootElement.style.cursor = selection && contains(selection, point) ? "move" : "crosshair";
+      if (!target?.dataset.handle) {
+        rootElement.style.cursor = selection && contains(selection, point) ? "move" : "crosshair";
+      }
       return;
     }
-    if (event.pointerId !== gesture.pointerId || !gesture.origin && gesture.mode !== "draw") return;
-    const dx = point.x - gesture.start.x;
-    const dy = point.y - gesture.start.y;
-    if (gesture.mode === "draw") {
-      previewRect = clampRect(normalizeRect(gesture.start, point));
-    } else if (gesture.mode === "move" && gesture.origin) {
+    if (event.pointerId !== currentGesture.pointerId
+      || (!currentGesture.origin && currentGesture.mode !== "draw")) return;
+    const dx = point.x - currentGesture.start.x;
+    const dy = point.y - currentGesture.start.y;
+    if (currentGesture.mode === "draw") {
+      previewRect = clampRect(normalizeRect(currentGesture.start, point));
+    } else if (currentGesture.mode === "move" && currentGesture.origin) {
       const bounds = session.bounds;
       selection = {
-        ...gesture.origin,
-        x: clamp(gesture.origin.x + dx, bounds.x, bounds.x + bounds.width - gesture.origin.width),
-        y: clamp(gesture.origin.y + dy, bounds.y, bounds.y + bounds.height - gesture.origin.height),
+        ...currentGesture.origin,
+        x: clamp(
+          currentGesture.origin.x + dx,
+          bounds.x,
+          bounds.x + bounds.width - currentGesture.origin.width,
+        ),
+        y: clamp(
+          currentGesture.origin.y + dy,
+          bounds.y,
+          bounds.y + bounds.height - currentGesture.origin.height,
+        ),
       };
-    } else if (gesture.mode === "resize" && gesture.origin && gesture.handle) {
-      selection = resizeRect(gesture.origin, gesture.handle, dx, dy, session.bounds);
+    } else if (currentGesture.mode === "resize" && currentGesture.origin && currentGesture.handle) {
+      selection = resizeRect(currentGesture.origin, currentGesture.handle, dx, dy, session.bounds);
+    } else if (currentGesture.mode === "annotate" && currentGesture.tool) {
+      layerPreview = appendLayerGesture(currentGesture.start, point, currentGesture.tool, event.shiftKey);
+      scheduleRender();
+    } else if ((currentGesture.mode === "moveLayer" || currentGesture.mode === "resizeLayer")
+      && currentGesture.layerOrigin && currentGesture.layerId) {
+      const updated = currentGesture.mode === "moveLayer"
+        ? moveLayer(currentGesture.layerOrigin, dx, dy)
+        : resizeLayer(currentGesture.layerOrigin, currentGesture.handle as ResizeHandle, dx, dy);
+      layers = layers.map((layer) => layer.id === currentGesture.layerId ? updated : layer);
+      scheduleRender();
     }
+    scheduleRender();
   }
 
   function onPointerUp(event: PointerEvent) {
-    if (!gesture || event.pointerId !== gesture.pointerId || !session) return;
+    const currentGesture = gesture;
+    if (!currentGesture || event.pointerId !== currentGesture.pointerId || !session) return;
     const point = pointerPoint(event);
-    if (gesture.mode === "draw") {
-      if (distance(gesture.start, point) < 4) {
+    if (currentGesture.mode === "draw") {
+      if (distance(currentGesture.start, point) < 4) {
         selection = fullMonitorRect(point);
       } else {
-        selection = clampRect(normalizeRect(gesture.start, point));
+        selection = clampRect(normalizeRect(currentGesture.start, point));
+      }
+    } else if (currentGesture.mode === "annotate" && currentGesture.tool) {
+      const created = appendLayerGesture(currentGesture.start, point, currentGesture.tool, event.shiftKey);
+      if (created) { commitLayers([...layers, created]); selectedLayerId = created.id; }
+      layerPreview = null;
+    } else if ((currentGesture.mode === "moveLayer" || currentGesture.mode === "resizeLayer")
+      && currentGesture.layerOrigin) {
+      if (distance(currentGesture.start, point) > 0) {
+        const previousLayer = currentGesture.layerOrigin;
+        history.push(layers.map((layer) => layer.id === previousLayer.id ? previousLayer : layer));
+        syncHistoryFlags();
       }
     }
     gesture = null;
     previewRect = null;
+    layerPreview = null; scheduleRender();
   }
 
   function onPointerCancel(event: PointerEvent) {
-    if (gesture?.pointerId !== event.pointerId) return;
-    if (gesture.mode === "draw") {
+    const currentGesture = gesture;
+    if (!currentGesture || currentGesture.pointerId !== event.pointerId) return;
+    if (currentGesture.mode === "draw") {
       selection = null;
       previewRect = null;
     }
+    if ((currentGesture.mode === "moveLayer" || currentGesture.mode === "resizeLayer")
+      && currentGesture.layerOrigin) {
+      const previousLayer = currentGesture.layerOrigin;
+      layers = layers.map((layer) => layer.id === previousLayer.id ? previousLayer : layer);
+    }
+    layerPreview = null;
     gesture = null;
+    scheduleRender();
   }
 
   function clampRect(rect: PhysicalRect): PhysicalRect {
@@ -245,13 +584,61 @@
     const monitor = monitorUnderPoint(point, session.monitors) ?? nearestMonitor(point, session.monitors);
     return monitor
       ? { x: monitor.x, y: monitor.y, width: monitor.width, height: monitor.height }
-      : { x: session.bounds.x, y: session.bounds.y, width: session.bounds.width, height: session.bounds.height };
+      : {
+          x: session.bounds.x,
+          y: session.bounds.y,
+          width: session.bounds.width,
+          height: session.bounds.height,
+        };
   }
 
   function onKeyDown(event: KeyboardEvent) {
+    if (
+      event.key === "Enter"
+      && event.target instanceof HTMLElement
+      && event.target.closest(".toolbar")
+    ) return;
+    if (editingTextId !== null || editingPoint) {
+      if (event.key === "Escape") { event.preventDefault(); finishTextEdit(true); }
+      else if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); finishTextEdit(); }
+      return;
+    }
+    const key = event.key.toLowerCase();
+    if (!(event.ctrlKey || event.metaKey) && !event.altKey && !event.repeat) {
+      const tools: Record<string, AnnotationTool> = {
+        v: "select",
+        a: "arrow",
+        l: "line",
+        r: "rect",
+        e: "ellipse",
+        t: "text",
+      };
+      const tool = tools[key];
+      if (tool) {
+        activeTool = tool;
+        return;
+      }
+    }
+    if ((event.ctrlKey || event.metaKey) && key === "z") {
+      event.preventDefault();
+      if (event.shiftKey) redo();
+      else undo();
+      return;
+    }
+    if ((event.ctrlKey || event.metaKey) && key === "y") {
+      event.preventDefault();
+      redo();
+      return;
+    }
+    if ((key === "delete" || key === "backspace") && selectedLayerId) {
+      event.preventDefault();
+      commitLayers(layers.filter((layer) => layer.id !== selectedLayerId));
+      selectedLayerId = null;
+      return;
+    }
     if (event.key === "Escape") {
       event.preventDefault();
-      void closeCapture();
+      if (selectedLayerId) { selectedLayerId = null; scheduleRender(); } else void closeCapture();
     } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c") {
       event.preventDefault();
       void runAction("copy_selection");
@@ -263,6 +650,126 @@
       if (selection) void runAction("copy_selection");
       else void selectCursorMonitor();
     }
+  }
+
+  function undo() {
+    const previous = history.undo(layers);
+    syncHistoryFlags();
+    if (previous) {
+      layers = previous;
+      selectedLayerId = null;
+      scheduleRender();
+    }
+  }
+
+  function redo() {
+    const next = history.redo(layers);
+    syncHistoryFlags();
+    if (next) {
+      layers = next;
+      selectedLayerId = null;
+      scheduleRender();
+    }
+  }
+
+  function changeColor(color: string) { activeColor = color; if (selectedLayerId) updateSelected({ color }); }
+  function changeWidth(width: number) {
+    strokeWidth = width;
+    if (selectedLayerId) updateSelected({ strokeWidth: width });
+  }
+  function updateSelected(change: { color?: string; strokeWidth?: number }) {
+    const selected = selectedLayer();
+    if (!selected) return;
+    const updated = updateLayerStyle(selected, change);
+    commitLayers(layers.map((layer) => layer.id === selected.id ? updated : layer));
+  }
+
+  function updateLayerStyle(
+    layer: Layer,
+    change: { color?: string; strokeWidth?: number },
+  ): Layer {
+    const color = change.color ?? layer.color;
+    const nextWidth = change.strokeWidth ?? layer.strokeWidth;
+    switch (layer.type) {
+      case "arrow":
+        return {
+          id: layer.id,
+          type: "arrow",
+          color,
+          strokeWidth: nextWidth,
+          start: layer.start,
+          end: layer.end,
+        };
+      case "line":
+        return {
+          id: layer.id,
+          type: "line",
+          color,
+          strokeWidth: nextWidth,
+          start: layer.start,
+          end: layer.end,
+        };
+      case "rect":
+        return {
+          id: layer.id,
+          type: "rect",
+          color,
+          strokeWidth: nextWidth,
+          x: layer.x,
+          y: layer.y,
+          width: layer.width,
+          height: layer.height,
+        };
+      case "ellipse":
+        return {
+          id: layer.id,
+          type: "ellipse",
+          color,
+          strokeWidth: nextWidth,
+          x: layer.x,
+          y: layer.y,
+          width: layer.width,
+          height: layer.height,
+        };
+      case "text":
+        return {
+          id: layer.id,
+          type: "text",
+          color,
+          strokeWidth: nextWidth,
+          x: layer.x,
+          y: layer.y,
+          text: layer.text,
+          fontSize: change.strokeWidth === undefined ? layer.fontSize : fontSizeForWidth(nextWidth),
+        };
+    }
+  }
+
+  function fontSizeForWidth(width: number): number {
+    if (width === 3) return 16;
+    if (width === 5) return 24;
+    return 36;
+  }
+
+  function textEditorStyle(point: PhysicalPoint): string {
+    const cssPoint = session
+      ? physicalPointToCss(point, session.bounds, window.devicePixelRatio || 1)
+      : { x: 0, y: 0 };
+    const selected = selectedLayer();
+    const fontSize = isText(selected) ? selected.fontSize : fontSizeForWidth(strokeWidth);
+    const color = isText(selected) ? selected.color : activeColor;
+    const dpr = window.devicePixelRatio || 1;
+    const lines = editingText.split("\n");
+    const width = Math.max(100, ...lines.map((line) => line.length * fontSize * 0.65 / dpr));
+    const height = Math.max(30, lines.length * fontSize * 1.25 / dpr);
+    return [
+      `left:${cssPoint.x}px;`,
+      `top:${cssPoint.y}px;`,
+      `width:${width}px;`,
+      `height:${height}px;`,
+      `color:${color};`,
+      `font-size:${fontSize / dpr}px;`,
+    ].join("");
   }
 
   async function selectCursorMonitor() {
@@ -281,12 +788,28 @@
     busy = true;
     notice = "";
     try {
-      await invoke(command, { rect: selection });
+      const layerBytes = layers.length ? rasterizeAnnotations(selection) : new Uint8Array(0);
+      await invoke(command, layerBytes, { headers: { "x-keepshot-rect": JSON.stringify(selection) } });
     } catch (error) {
       if (session?.session === actionSession) showNotice(String(error));
     } finally {
       if (session?.session === actionSession) busy = false;
     }
+  }
+
+  function rasterizeAnnotations(rect: PhysicalRect): Uint8Array {
+    const canvas = document.createElement("canvas");
+    canvas.width = rect.width;
+    canvas.height = rect.height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Canvas 2D is unavailable");
+    renderLayers(ctx, layers, {
+      originX: rect.x,
+      originY: rect.y,
+      scale: 1,
+    });
+    const pixels = ctx.getImageData(0, 0, rect.width, rect.height).data;
+    return new Uint8Array(pixels.buffer);
   }
 
   async function closeCapture() {
@@ -303,14 +826,23 @@
   }
 
   function contains(rect: PhysicalRect, point: PhysicalPoint): boolean {
-    return point.x >= rect.x && point.x < rect.x + rect.width && point.y >= rect.y && point.y < rect.y + rect.height;
+    return point.x >= rect.x
+      && point.x < rect.x + rect.width
+      && point.y >= rect.y
+      && point.y < rect.y + rect.height;
   }
 
   function distance(left: PhysicalPoint, right: PhysicalPoint): number {
     return Math.hypot(left.x - right.x, left.y - right.y);
   }
 
-  function resizeRect(origin: PhysicalRect, handle: string, dx: number, dy: number, bounds: VirtualBounds): PhysicalRect {
+  function resizeRect(
+    origin: PhysicalRect,
+    handle: string,
+    dx: number,
+    dy: number,
+    bounds: VirtualBounds,
+  ): PhysicalRect {
     let left = origin.x;
     let top = origin.y;
     let right = origin.x + origin.width;
@@ -318,7 +850,9 @@
     if (handle.includes("w")) left = clamp(origin.x + dx, bounds.x, right - 1);
     if (handle.includes("e")) right = clamp(origin.x + origin.width + dx, left + 1, bounds.x + bounds.width);
     if (handle.includes("n")) top = clamp(origin.y + dy, bounds.y, bottom - 1);
-    if (handle.includes("s")) bottom = clamp(origin.y + origin.height + dy, top + 1, bounds.y + bounds.height);
+    if (handle.includes("s")) {
+      bottom = clamp(origin.y + origin.height + dy, top + 1, bounds.y + bounds.height);
+    }
     return { x: left, y: top, width: right - left, height: bottom - top };
   }
 
@@ -328,7 +862,9 @@
     let unlistenClear: (() => void) | undefined;
     let disposed = false;
     void (async () => {
-      unlistenFrame = await win.listen<OverlaySession>("overlay:frame", (event) => receiveFrames(event.payload));
+      unlistenFrame = await win.listen<OverlaySession>("overlay:frame", (event) => {
+        receiveFrames(event.payload);
+      });
       if (disposed) {
         unlistenFrame();
         return;
@@ -337,6 +873,14 @@
         loadSequence += 1;
         session = null;
         selection = null;
+        layers = [];
+        selectedLayerId = null;
+        layerPreview = null;
+        editingPoint = null;
+        editingTextId = null;
+        editingText = "";
+        history.reset();
+        syncHistoryFlags();
         previewRect = null;
         gesture = null;
         loading = false;
@@ -352,9 +896,11 @@
       if (pending) receiveFrames(pending);
     })().catch((error) => showNotice(String(error)));
     window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("resize", scheduleRender);
     return () => {
       disposed = true;
       window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("resize", scheduleRender);
       unlistenFrame?.();
       unlistenClear?.();
       if (noticeTimeout) clearTimeout(noticeTimeout);
@@ -388,6 +934,7 @@
         aria-label="Frozen frame of {monitor.name}"
       ></canvas>
     {/each}
+    <canvas class="annotation-canvas" bind:this={annotationCanvas} aria-hidden="true"></canvas>
     <svg class="dimmer-svg" aria-hidden="true">
       <defs>
         <clipPath id="dimmer-cutout" clipPathUnits="userSpaceOnUse">
@@ -399,7 +946,11 @@
   {/if}
 
   {#if visibleRect && session}
-    {@const rectPosition = physicalPointToCss({ x: visibleRect.x, y: visibleRect.y }, session.bounds, window.devicePixelRatio || 1)}
+    {@const rectPosition = physicalPointToCss(
+      { x: visibleRect.x, y: visibleRect.y },
+      session.bounds,
+      window.devicePixelRatio || 1,
+    )}
     <div class="selection-outline" style={rectStyle(visibleRect)}>
       {#if selection && !gesture}
         {#each handleNames as handle (handle)}
@@ -413,32 +964,48 @@
   {/if}
 
   {#if selection && !gesture && actionPosition}
-    <div
-      class="action-bar"
-      role="toolbar"
-      aria-label="Capture actions"
-      tabindex="-1"
-      class:working={busy}
-      style={`left:${actionPosition.x}px;top:${actionPosition.y}px;width:${actionPosition.width}px;height:${actionPosition.height}px`}
+    <Toolbar
+      position={actionPosition}
+      tool={activeTool}
+      color={activeColor}
+      strokeWidth={strokeWidth}
+      {canUndo}
+      {canRedo}
+      {busy}
+      {notice}
+      onTool={(tool) => activeTool = tool}
+      onColor={changeColor}
+      onWidth={changeWidth}
+      onUndo={undo}
+      onRedo={redo}
+      onCopy={() => runAction("copy_selection")}
+      onSave={() => runAction("save_selection")}
+      onClose={closeCapture}
+    />
+  {/if}
+
+  {#if editingPoint && session}
+    {@const editorStyle = textEditorStyle(editingPoint)}
+    <textarea
+      bind:this={textEditor}
+      class="text-editor"
+      value={editingText}
+      oninput={(event) => editingText = event.currentTarget.value}
       onpointerdown={(event) => event.stopPropagation()}
       onpointerup={(event) => event.stopPropagation()}
-    >
-      {#if notice}
-        <div class="action-notice" role="status">{notice}</div>
-      {/if}
-      <button class="action-button copy-button" disabled={busy} onclick={() => runAction("copy_selection")} aria-label="Copy selection">
-        <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="7" y="7" width="9" height="10" rx="1.5" /><path d="M12 4H5.5A1.5 1.5 0 0 0 4 5.5V13" /></svg>
-        <span>Copy</span><kbd>Ctrl C</kbd>
-      </button>
-      <button class="action-button" disabled={busy} onclick={() => runAction("save_selection")} aria-label="Save selection">
-        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 3.5h10l2 2V16a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z" /><path d="M7 3.5v5h6v-5M7 17v-5h6v5" /></svg>
-        <span>Save</span><kbd>Ctrl S</kbd>
-      </button>
-      <button class="action-button close-button" disabled={busy} onclick={closeCapture} aria-label="Close capture">
-        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" /></svg>
-        <span>Close</span><kbd>Esc</kbd>
-      </button>
-    </div>
+      onkeydown={(event) => {
+        event.stopPropagation();
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          finishTextEdit();
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          finishTextEdit(true);
+        }
+      }}
+      onblur={() => { if (editingPoint) finishTextEdit(); }}
+      style={editorStyle}
+    ></textarea>
   {/if}
 
   {#if loading}
@@ -477,6 +1044,15 @@
     object-fit: fill;
     pointer-events: none;
     user-select: none;
+  }
+
+  .annotation-canvas {
+    position: absolute;
+    z-index: 1;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
   }
 
   .dimmer-svg {
@@ -587,103 +1163,23 @@
     cursor: ew-resize;
   }
 
-  .action-bar {
+  .text-editor {
     position: absolute;
-    z-index: 5;
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    width: 326px;
-    height: 52px;
-    padding: 6px;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: var(--radius-xl);
-    background: var(--color-glass);
-    backdrop-filter: blur(16px) saturate(180%);
-    box-shadow: var(--shadow-l1);
-    cursor: default;
-  }
-
-  .action-bar.working {
-    opacity: 0.72;
-  }
-
-  .action-button {
-    display: flex;
-    flex: 1;
-    min-width: 0;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    height: 38px;
-    padding: 0 8px;
-    border: 1px solid transparent;
-    border-radius: var(--radius-md);
-    background: rgba(255, 255, 255, 0.06);
-    color: var(--color-text);
-    font: 600 12px var(--font-sans);
-    cursor: pointer;
-  }
-
-  .action-button:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.13);
-    color: white;
-  }
-
-  .action-button:disabled {
-    cursor: wait;
-  }
-
-  .action-button svg {
-    width: 16px;
-    height: 16px;
-    fill: none;
-    stroke: currentColor;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-    stroke-width: 1.6;
-  }
-
-  .copy-button {
-    border-color: rgba(99, 102, 241, 0.5);
-    background: var(--color-primary);
-    color: #fff;
-  }
-
-  .copy-button:hover:not(:disabled) {
-    background: var(--color-primary-hover);
-  }
-
-  kbd {
-    padding: 3px 4px;
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: var(--radius-sm);
-    background: rgba(255, 255, 255, 0.08);
-    color: rgba(255, 255, 255, 0.7);
-    font: 600 9px var(--font-sans);
-    white-space: nowrap;
-  }
-
-  .close-button:hover:not(:disabled) {
-    background: rgba(239, 68, 68, 0.15);
-    color: #fca5a5;
-  }
-
-  .action-notice {
-    position: absolute;
-    right: 0;
-    bottom: calc(100% + 7px);
-    max-width: 326px;
+    z-index: 4;
+    min-width: 100px;
+    min-height: 1.35em;
+    width: max-content;
     overflow: hidden;
-    padding: 7px 10px;
-    border: 1px solid rgba(239, 68, 68, 0.4);
-    border-radius: var(--radius-md);
-    background: rgba(24, 24, 27, 0.94);
-    color: #fecaca;
-    font: 11px/1.4 var(--font-sans);
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    box-shadow: var(--shadow-l1);
+    padding: 0;
+    border: 0;
+    outline: 1px solid rgba(99,102,241,.65);
+    background: transparent;
+    font-family: Inter, "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+    font-weight: 600;
+    line-height: 1.25;
+    resize: none;
+    user-select: text;
+    white-space: pre;
   }
 
   .loading-indicator {

@@ -75,10 +75,10 @@ export function actionBarPosition(
 ): PhysicalPoint & { width: number; height: number } {
   const corner = { x: rect.x + rect.width - 1, y: rect.y + rect.height - 1 };
   const monitor = monitorUnderPoint(corner, monitors) ?? nearestMonitor(corner, monitors);
-  if (!monitor) return { x: 8, y: 8, width: 326, height: 52 };
+  if (!monitor) return { x: 8, y: 8, width: 640, height: 52 };
 
-  const barWidth = Math.min(326 * devicePixelRatio, monitor.width);
-  const barHeight = Math.min(52 * devicePixelRatio, monitor.height);
+  const barWidth = Math.min(640 * devicePixelRatio, monitor.width);
+  const barHeight = Math.min((monitor.width < 640 * devicePixelRatio ? 104 : 52) * devicePixelRatio, monitor.height);
   const gap = 12 * devicePixelRatio;
   let x = rect.x + rect.width - barWidth;
   let y = rect.y + rect.height + gap;

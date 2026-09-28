@@ -19,6 +19,7 @@ pub fn compose(
     bounds: VirtualBounds,
     frames: Vec<FrameEntry>,
     rect: SelectionRect,
+    overlay: Option<&[u8]>,
 ) -> Result<RgbaImage, String> {
     if rect.width == 0 || rect.height == 0 {
         return Err("Selection width and height must be at least one pixel".to_string());
@@ -66,6 +67,29 @@ pub fn compose(
                 bottom,
             },
         )?;
+    }
+    if let Some(overlay) = overlay {
+        let expected = (rect.width as usize)
+            .checked_mul(rect.height as usize)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or_else(|| "Annotation layer is too large".to_string())?;
+        if overlay.len() != expected {
+            return Err("Annotation layer size does not match the selection".to_string());
+        }
+        let (destination, remainder) = output.as_mut().as_chunks_mut::<4>();
+        if !remainder.is_empty() {
+            return Err("Selection buffer has an invalid RGBA size".to_string());
+        }
+        for (pixel, source) in destination.iter_mut().zip(overlay.as_chunks::<4>().0) {
+            let alpha = u32::from(source[3]);
+            let inverse = 255 - alpha;
+            for (destination, source) in pixel.iter_mut().zip(source.iter()).take(3) {
+                *destination =
+                    ((u32::from(*source) * alpha + u32::from(*destination) * inverse + 127) / 255)
+                        as u8;
+            }
+            pixel[3] = 255;
+        }
     }
     Ok(output)
 }

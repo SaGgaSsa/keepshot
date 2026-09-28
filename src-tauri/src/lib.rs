@@ -141,13 +141,16 @@ fn close_overlays(
 #[tauri::command]
 async fn copy_selection(
     app: tauri::AppHandle,
-    rect: output::SelectionRect,
+    request: tauri::ipc::Request<'_>,
     state: tauri::State<'_, frames::FrameStore>,
 ) -> Result<(), String> {
+    let (rect, overlay) = selection_request_parts(&request)?;
     let (session, bounds, frames) = state.snapshot()?;
-    let image = tauri::async_runtime::spawn_blocking(move || output::compose(bounds, frames, rect))
-        .await
-        .map_err(|error| format!("Image composition task failed: {error}"))??;
+    let image = tauri::async_runtime::spawn_blocking(move || {
+        output::compose(bounds, frames, rect, overlay.as_deref())
+    })
+    .await
+    .map_err(|error| format!("Image composition task failed: {error}"))??;
     let clipboard_image = tauri::image::Image::new(image.as_raw(), image.width(), image.height());
     app.clipboard()
         .write_image(&clipboard_image)
@@ -158,9 +161,10 @@ async fn copy_selection(
 #[tauri::command]
 async fn save_selection(
     app: tauri::AppHandle,
-    rect: output::SelectionRect,
+    request: tauri::ipc::Request<'_>,
     state: tauri::State<'_, frames::FrameStore>,
 ) -> Result<String, String> {
+    let (rect, overlay) = selection_request_parts(&request)?;
     let (session, bounds, frames) = state.snapshot()?;
     let directory = app
         .path()
@@ -170,7 +174,7 @@ async fn save_selection(
     let saved_path = tauri::async_runtime::spawn_blocking(move || {
         fs::create_dir_all(&directory)
             .map_err(|error| format!("Could not create {}: {error}", directory.display()))?;
-        let image = output::compose(bounds, frames, rect)?;
+        let image = output::compose(bounds, frames, rect, overlay.as_deref())?;
         let filename = format!(
             "KeepShot_{}.png",
             chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")
@@ -183,6 +187,22 @@ async fn save_selection(
     .map_err(|error| format!("Image save task failed: {error}"))??;
     close_overlay_session_for(&app, &app.state::<frames::FrameStore>(), &session)?;
     Ok(saved_path)
+}
+
+fn selection_request_parts(
+    request: &tauri::ipc::Request<'_>,
+) -> Result<(output::SelectionRect, Option<Vec<u8>>), String> {
+    let rect = request
+        .headers()
+        .get("x-keepshot-rect")
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| "missing rect".to_string())?;
+    let rect = serde_json::from_str(rect).map_err(|error| error.to_string())?;
+    let overlay = match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) if !bytes.is_empty() => Some(bytes.clone()),
+        _ => None,
+    };
+    Ok((rect, overlay))
 }
 
 #[derive(serde::Serialize)]
