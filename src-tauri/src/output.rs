@@ -1,12 +1,12 @@
 use std::path::{Path, PathBuf};
 
 use image::{ColorType, Rgba, RgbaImage};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::capture::VirtualBounds;
 use crate::frames::FrameEntry;
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SelectionRect {
     pub x: i32,
@@ -15,11 +15,118 @@ pub struct SelectionRect {
     pub height: u32,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportHeader {
+    rect: SelectionRect,
+    document: serde_json::Value,
+    has_composite: bool,
+    has_redact_base: bool,
+    history_id: Option<String>,
+}
+
+pub struct ExportPayload {
+    pub rect: SelectionRect,
+    pub document: serde_json::Value,
+    pub composite: Option<Vec<u8>>,
+    pub redact_base: Option<Vec<u8>>,
+    pub history_id: Option<String>,
+}
+
+pub fn parse_export_body(bytes: &[u8]) -> Result<ExportPayload, String> {
+    if bytes.len() < 4 {
+        return Err("Export body is missing its JSON length prefix".to_string());
+    }
+    let json_length = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+    let json_end = 4usize
+        .checked_add(json_length)
+        .filter(|end| *end <= bytes.len())
+        .ok_or_else(|| "Export body has an invalid JSON length".to_string())?;
+    let header: ExportHeader = serde_json::from_slice(&bytes[4..json_end])
+        .map_err(|error| format!("Invalid export metadata: {error}"))?;
+    if !header.document.is_object()
+        || header
+            .document
+            .get("version")
+            .and_then(serde_json::Value::as_u64)
+            != Some(2)
+        || !header
+            .document
+            .get("layers")
+            .is_some_and(serde_json::Value::is_array)
+    {
+        return Err("Export annotation document must be version 2".to_string());
+    }
+    if header.rect.width == 0 || header.rect.height == 0 {
+        return Err("Selection width and height must be at least one pixel".to_string());
+    }
+    let layer_bytes = (header.rect.width as usize)
+        .checked_mul(header.rect.height as usize)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| "Selection is too large".to_string())?;
+    let has_redact_layers = header.document["layers"]
+        .as_array()
+        .is_some_and(|layers| layers.iter().any(|layer| layer["type"] == "redact"));
+    if has_redact_layers {
+        return Err("Redaction layers must not be included in export metadata".to_string());
+    }
+    let document_has_layers = header.document["layers"]
+        .as_array()
+        .is_some_and(|layers| !layers.is_empty());
+    if !header.has_composite && (document_has_layers || header.has_redact_base) {
+        return Err("Export metadata is missing its composite image".to_string());
+    }
+    let composite_length = if header.has_composite { layer_bytes } else { 0 };
+    let redact_length = if header.has_redact_base {
+        layer_bytes
+    } else {
+        0
+    };
+    let expected_length = json_end
+        .checked_add(composite_length)
+        .and_then(|length| length.checked_add(redact_length))
+        .ok_or_else(|| "Export body is too large".to_string())?;
+    if bytes.len() != expected_length {
+        return Err("Export body image lengths do not match the selection".to_string());
+    }
+    let composite_end = json_end + composite_length;
+    Ok(ExportPayload {
+        rect: header.rect,
+        document: header.document,
+        composite: header
+            .has_composite
+            .then(|| bytes[json_end..composite_end].to_vec()),
+        redact_base: header
+            .has_redact_base
+            .then(|| bytes[composite_end..].to_vec()),
+        history_id: header.history_id,
+    })
+}
+
 pub fn compose(
     bounds: VirtualBounds,
     frames: Vec<FrameEntry>,
     rect: SelectionRect,
     overlay: Option<&[u8]>,
+) -> Result<RgbaImage, String> {
+    compose_region(bounds, frames, rect, overlay, false)
+}
+
+pub fn compose_history_region(
+    bounds: VirtualBounds,
+    frames: Vec<FrameEntry>,
+    rect: SelectionRect,
+    overlay: Option<&[u8]>,
+) -> Result<RgbaImage, String> {
+    compose_region(bounds, frames, rect, overlay, true)
+}
+
+fn compose_region(
+    bounds: VirtualBounds,
+    frames: Vec<FrameEntry>,
+    rect: SelectionRect,
+    overlay: Option<&[u8]>,
+    allow_outside_bounds: bool,
 ) -> Result<RgbaImage, String> {
     if rect.width == 0 || rect.height == 0 {
         return Err("Selection width and height must be at least one pixel".to_string());
@@ -32,10 +139,11 @@ pub fn compose(
     let bounds_top = i64::from(bounds.y);
     let bounds_right = bounds_left + i64::from(bounds.width);
     let bounds_bottom = bounds_top + i64::from(bounds.height);
-    if rect_left < bounds_left
-        || rect_top < bounds_top
-        || rect_right > bounds_right
-        || rect_bottom > bounds_bottom
+    if !allow_outside_bounds
+        && (rect_left < bounds_left
+            || rect_top < bounds_top
+            || rect_right > bounds_right
+            || rect_bottom > bounds_bottom)
     {
         return Err("Selection is outside the virtual desktop bounds".to_string());
     }

@@ -13,6 +13,7 @@
     isRedact,
     isText,
     moveLayer,
+    parseAnnotationDocument,
     resizeLayer,
     type AnnotationTool,
     type ArrowLayer,
@@ -58,7 +59,7 @@
     REGION_HANDLES as handleNames,
     resizeRect,
   } from "$lib/overlay/regionSelection";
-  import { loadFrames, type OverlaySession } from "$lib/overlay/session";
+  import { loadFrames, type HistoryEditSession, type OverlaySession } from "$lib/overlay/session";
   import { invokeSelectionAction } from "$lib/overlay/exporter";
   import { handleOverlayKeyDown } from "$lib/overlay/keyboard";
   type Gesture = {
@@ -73,6 +74,7 @@
   };
 
   let session = $state<OverlaySession | null>(null);
+  let editSession = $state<HistoryEditSession | null>(null);
   let selection = $state<PhysicalRect | null>(null);
   let previewRect = $state<PhysicalRect | null>(null);
   let gesture = $state<Gesture | null>(null);
@@ -146,6 +148,8 @@
     loading = true;
     selection = null;
     layers = [];
+    const edit = next.edit;
+    editSession = edit ?? null;
     selectedLayerId = null;
     layerPreview = null;
     gesture = null;
@@ -160,6 +164,15 @@
     history.reset();
     syncHistoryFlags();
     previewRect = null;
+    if (edit) {
+      selection = edit.rect;
+      const document = parseAnnotationDocument(edit.document);
+      layers = document.layers.map((layer) => moveLayer(
+        layer,
+        edit.rect.x,
+        edit.rect.y,
+      ));
+    }
     session = next;
     void waitForFrames(next, sequence, arrivedAt);
   }
@@ -245,7 +258,8 @@
     const point = pointerPoint(event);
     const target = event.target instanceof HTMLElement ? event.target : null;
     const handle = target?.dataset.handle;
-    const regionHandle = handle && selection;
+    const regionHandle = !editSession && handle && selection;
+    if (editSession && (!selection || !contains(selection, point))) return;
     if (activeTool !== "select" && !regionHandle && (!selection || !contains(selection, point))) return;
     const selected = selectedLayer();
     const curvePoint = selected?.type === "arrow" ? arrowCurveHandlePoint(selected) : null;
@@ -315,6 +329,10 @@
       commitLayers([...layers, created]);
       selectedLayerId = created.id;
       event.preventDefault();
+      return;
+    } else if (editSession && activeTool === "select" && selection && contains(selection, point)) {
+      selectedLayerId = null;
+      scheduleRender();
       return;
     } else if (activeTool !== "select" && selection && contains(selection, point)) mode = "annotate";
     else if (selection && contains(selection, point)) { selectedLayerId = null; mode = "move"; }
@@ -546,6 +564,11 @@
   }
 
   function onKeyDown(event: KeyboardEvent) {
+    if (editSession && event.key === "Escape" && !editingPoint) {
+      event.preventDefault();
+      void closeCapture();
+      return;
+    }
     handleOverlayKeyDown(event, {
       editingText: editingTextId !== null || Boolean(editingPoint),
       selectedLayer: Boolean(selectedLayerId),
@@ -680,7 +703,13 @@
     busy = true;
     notice = "";
     try {
-      await invokeSelectionAction(command, selection, layers, baseSource);
+      await invokeSelectionAction(
+        command,
+        selection,
+        layers,
+        baseSource,
+        editSession?.historyId ?? null,
+      );
     } catch (error) {
       if (session?.session === actionSession) showNotice(String(error));
     } finally {
@@ -718,6 +747,7 @@
         loadSequence += 1;
         session = null;
         selection = null;
+        editSession = null;
         layers = [];
         selectedLayerId = null;
         baseSource = null;
@@ -802,7 +832,7 @@
       width={visibleRect.width}
       height={visibleRect.height}
       handles={handleNames}
-      editable={Boolean(selection && !gesture)}
+      editable={Boolean(selection && !gesture && !editSession)}
       inside={rectPosition.y < 30}
     />
   {/if}

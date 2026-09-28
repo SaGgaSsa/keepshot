@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window and capture overlay",
-  "windows": ["main", "overlay"],
+  "description": "Capability for the main window, capture overlay, and history panel",
+  "windows": ["main", "overlay", "history"],
   "permissions": [
     "core:default"
   ]

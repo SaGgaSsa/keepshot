@@ -4,8 +4,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::capture::{CapturedFrame, MonitorInfo, VirtualBounds};
+use crate::output::SelectionRect;
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -23,6 +25,16 @@ pub struct PendingFrames {
     pub session: String,
     pub bounds: VirtualBounds,
     pub monitors: Vec<MonitorInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edit: Option<EditFrameInfo>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditFrameInfo {
+    pub history_id: String,
+    pub rect: SelectionRect,
+    pub document: Value,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -90,6 +102,7 @@ struct FrameSession {
     metrics_emitted: bool,
     bounds: VirtualBounds,
     entries: HashMap<String, FrameEntry>,
+    edit: Option<EditFrameInfo>,
 }
 
 #[derive(Default)]
@@ -113,6 +126,29 @@ impl FrameStore {
         bounds: VirtualBounds,
         frames: Vec<FrameEntry>,
     ) -> Result<(), String> {
+        self.begin_with_edit(id, started, capture_total_ms, bounds, frames, None)
+    }
+
+    pub fn begin_edit(
+        &self,
+        id: String,
+        started: Instant,
+        bounds: VirtualBounds,
+        frames: Vec<FrameEntry>,
+        edit: EditFrameInfo,
+    ) -> Result<(), String> {
+        self.begin_with_edit(id, started, 0.0, bounds, frames, Some(edit))
+    }
+
+    fn begin_with_edit(
+        &self,
+        id: String,
+        started: Instant,
+        capture_total_ms: f64,
+        bounds: VirtualBounds,
+        frames: Vec<FrameEntry>,
+        edit: Option<EditFrameInfo>,
+    ) -> Result<(), String> {
         let mut current = self
             .inner
             .lock()
@@ -133,6 +169,7 @@ impl FrameStore {
             metrics_emitted: false,
             bounds,
             entries,
+            edit,
         });
         Ok(())
     }
@@ -172,6 +209,7 @@ impl FrameStore {
             session: session.id.clone(),
             bounds: session.bounds,
             monitors,
+            edit: session.edit.clone(),
         })
     }
 
@@ -248,6 +286,10 @@ impl FrameStore {
         if session.metrics_emitted {
             return Ok(None);
         }
+        if session.edit.is_some() {
+            session.metrics_emitted = true;
+            return Ok(None);
+        }
         let timing_map: HashMap<_, _> = timings
             .into_iter()
             .map(|timing| (timing.label.clone(), timing))
@@ -295,6 +337,21 @@ impl FrameStore {
             session.bounds,
             session.entries.values().cloned().collect(),
         ))
+    }
+
+    pub fn validate_history_target(&self, history_id: Option<&str>) -> Result<(), String> {
+        let current = self
+            .inner
+            .lock()
+            .map_err(|_| "Frame state is unavailable".to_string())?;
+        let session = current
+            .as_ref()
+            .ok_or_else(|| "There is no active capture to export".to_string())?;
+        let expected = session.edit.as_ref().map(|edit| edit.history_id.as_str());
+        if expected != history_id {
+            return Err("Export history id does not match the active session".to_string());
+        }
+        Ok(())
     }
 
     pub fn clear_if_session(&self, session_id: &str) -> Result<bool, String> {

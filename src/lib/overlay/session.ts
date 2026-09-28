@@ -1,10 +1,17 @@
 import type { BaseFrame } from "$lib/annotations/render";
-import type { MonitorGeometry, VirtualBounds } from "./geometry";
+import type { MonitorGeometry, PhysicalRect, VirtualBounds } from "./geometry";
+
+export type HistoryEditSession = {
+  historyId: string;
+  rect: PhysicalRect;
+  document: unknown;
+};
 
 export type OverlaySession = {
   session: string;
   bounds: VirtualBounds;
   monitors: MonitorGeometry[];
+  edit?: HistoryEditSession;
 };
 
 export type ImageTiming = { label: string; loadMs: number; paintMs: number };

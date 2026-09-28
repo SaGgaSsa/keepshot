@@ -1,6 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { renderLayers, type BaseSource } from "$lib/annotations/render";
-import type { Layer } from "$lib/annotations/model";
+import {
+  isRedact,
+  moveLayer,
+  type AnnotationDocument,
+  type Layer,
+} from "$lib/annotations/model";
 import type { PhysicalRect } from "./geometry";
 
 export function rasterizeAnnotations(
@@ -27,11 +32,37 @@ export async function invokeSelectionAction(
   rect: PhysicalRect,
   layers: readonly Layer[],
   baseSource: BaseSource | null,
+  historyId: string | null,
 ): Promise<void> {
-  const body = layers.length
-    ? rasterizeAnnotations(rect, layers, baseSource)
-    : new Uint8Array(0);
-  await invoke(command, body, {
-    headers: { "x-keepshot-rect": JSON.stringify(rect) },
-  });
+  const composite = layers.length ? rasterizeAnnotations(rect, layers, baseSource) : null;
+  const redactions = layers.filter(isRedact);
+  const redactBase = redactions.length
+    ? rasterizeAnnotations(rect, redactions, baseSource)
+    : null;
+  const document: AnnotationDocument = {
+    version: 2,
+    layers: layers
+      .filter((layer) => !isRedact(layer))
+      .map((layer) => moveLayer(layer, -rect.x, -rect.y)),
+  };
+  const metadata = new TextEncoder().encode(JSON.stringify({
+    rect,
+    document,
+    hasComposite: composite !== null,
+    hasRedactBase: redactBase !== null,
+    historyId,
+  }));
+  if (metadata.byteLength > 0xffffffff) throw new Error("Export metadata is too large");
+  const compositeLength = composite?.byteLength ?? 0;
+  const redactLength = redactBase?.byteLength ?? 0;
+  const body = new Uint8Array(4 + metadata.byteLength + compositeLength + redactLength);
+  new DataView(body.buffer).setUint32(0, metadata.byteLength, true);
+  body.set(metadata, 4);
+  let offset = 4 + metadata.byteLength;
+  if (composite) {
+    body.set(composite, offset);
+    offset += composite.byteLength;
+  }
+  if (redactBase) body.set(redactBase, offset);
+  await invoke(command, body);
 }

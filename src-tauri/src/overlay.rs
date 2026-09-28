@@ -2,8 +2,8 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use tauri::{
-    AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder,
+    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder, WindowEvent,
 };
 
 use crate::capture::{MonitorInfo, VirtualBounds};
@@ -46,6 +46,84 @@ pub fn reconcile(
     position_window(&window, bounds)?;
     *known = Some((monitors.to_vec(), bounds));
     Ok(started.elapsed().as_secs_f64() * 1000.0)
+}
+
+pub fn create_history_window(app: &AppHandle) -> Result<WebviewWindow, String> {
+    let window = WebviewWindowBuilder::new(app, "history", WebviewUrl::App("history".into()))
+        .title("KeepShot History")
+        .inner_size(420.0, 560.0)
+        .transparent(true)
+        .decorations(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .visible(false)
+        .focused(false)
+        .build()
+        .map_err(|error| format!("Could not create history panel: {error}"))?;
+    let app = app.clone();
+    window.on_window_event(move |event| {
+        if matches!(event, WindowEvent::Focused(false)) {
+            if let Some(window) = app.get_webview_window("history") {
+                if let Err(error) = window.hide() {
+                    eprintln!("Could not hide history panel after focus loss: {error}");
+                }
+            }
+        }
+    });
+    Ok(window)
+}
+
+pub fn toggle_history(app: &AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("history")
+        .ok_or_else(|| "History panel is unavailable".to_string())?;
+    if window.is_visible().map_err(|error| error.to_string())? {
+        return window.hide().map_err(|error| error.to_string());
+    }
+    position_history(&window, app)?;
+    window.show().map_err(|error| error.to_string())?;
+    if let Err(error) = window.set_focus() {
+        eprintln!("Could not focus history panel: {error}");
+    }
+    if let Err(error) = window.emit("history:shown", ()) {
+        eprintln!("Could not notify history panel that it was shown: {error}");
+    }
+    Ok(())
+}
+
+pub fn hide_history(app: &AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("history") {
+        window.hide().map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn position_history(window: &WebviewWindow, app: &AppHandle) -> Result<(), String> {
+    let cursor = app.cursor_position().map_err(|error| error.to_string())?;
+    let monitors = crate::capture::monitor_infos()?;
+    let monitor = monitors
+        .iter()
+        .find(|monitor| {
+            cursor.x >= f64::from(monitor.x)
+                && cursor.x < f64::from(monitor.x) + f64::from(monitor.width)
+                && cursor.y >= f64::from(monitor.y)
+                && cursor.y < f64::from(monitor.y) + f64::from(monitor.height)
+        })
+        .or_else(|| monitors.first())
+        .ok_or_else(|| "No monitor is available for the history panel".to_string())?;
+    let scale = f64::from(monitor.scale_factor.max(1.0));
+    let panel_width = (420.0 * scale).round() as i32;
+    let panel_height = (560.0 * scale).round() as i32;
+    let margin = (16.0 * scale).round() as i32;
+    let taskbar = (48.0 * scale).round() as i32;
+    let left = monitor.x + monitor.width as i32 - panel_width - margin;
+    let top = monitor.y + monitor.height as i32 - panel_height - margin - taskbar;
+    let x = left.max(monitor.x);
+    let y = top.max(monitor.y);
+    window
+        .set_position(PhysicalPosition::new(x, y))
+        .map_err(|error| error.to_string())
 }
 
 fn same_topology(left: &[MonitorInfo], right: &[MonitorInfo]) -> bool {
