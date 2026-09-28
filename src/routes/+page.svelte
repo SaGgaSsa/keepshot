@@ -155,7 +155,7 @@
 
 <main>
   <header>
-    <div class="brand-mark" aria-hidden="true">K</div>
+    <img class="brand-mark" src="/app-icon.svg" alt="" aria-hidden="true" draggable="false" />
     <div>
       <p class="eyebrow">KEEPSHOT</p>
       <h1>Settings</h1>
@@ -295,15 +295,10 @@
     margin-bottom: 20px;
   }
   .brand-mark {
-    display: grid;
-    place-items: center;
-    width: 38px;
-    height: 38px;
-    border-radius: 12px;
-    background: linear-gradient(145deg, #818cf8, var(--color-primary-hover));
-    color: white;
-    font-weight: 700;
-    box-shadow: 0 6px 18px #6366f144;
+    display: block;
+    width: 40px;
+    height: 40px;
+    filter: drop-shadow(0 6px 14px #6366f140);
   }
   .eyebrow {
     margin: 0 0 3px;
