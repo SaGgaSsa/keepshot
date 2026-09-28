@@ -35,3 +35,7 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+# Capture and image encoding are CPU-bound; keep them fast in `tauri dev`.
+[profile.dev.package."*"]
+opt-level = 3
