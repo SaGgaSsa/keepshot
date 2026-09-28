@@ -27,13 +27,33 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": [
+      "nsis"
+    ],
+    "publisher": "SaGgaSsa",
+    "copyright": "Copyright (c) 2026 SaGgaSsa. MIT License.",
+    "category": "Utility",
+    "shortDescription": "Lightweight screenshot tool with local history",
+    "longDescription": "KeepShot is a lightweight, open source screenshot tool with multi-monitor capture, re-editable annotations and a local capture history.",
+    "homepage": "https://github.com/SaGgaSsa/keepshot",
+    "licenseFile": "../LICENSE",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerIcon": "icons/icon.ico",
+        "displayLanguageSelector": false,
+        "languages": [
+          "English",
+          "Spanish"
+        ]
+      }
+    }
   }
 }
