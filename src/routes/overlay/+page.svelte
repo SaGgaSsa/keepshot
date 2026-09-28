@@ -13,6 +13,7 @@
     isRedact,
     isSegment,
     isText,
+    layerBounds,
     moveLayer,
     resizeLayer,
     type AnnotationTool,
@@ -319,20 +320,20 @@
       ctx.rect(toCanvasX(layer.x), toCanvasY(layer.y), textWidth / dpr, layer.fontSize * 1.25 / dpr);
     } else if (layer.type === "step") {
       ctx.arc(toCanvasX(layer.x), toCanvasY(layer.y), layer.radius / dpr, 0, Math.PI * 2);
-    } else if (layer.type === "marker") {
-      for (const [index, point] of layer.points.entries()) {
-        if (index === 0) ctx.moveTo(toCanvasX(point.x), toCanvasY(point.y));
-        else ctx.lineTo(toCanvasX(point.x), toCanvasY(point.y));
-      }
-    } else if (isRedact(layer)) {
-      ctx.lineWidth = 2;
-      for (const [index, point] of layer.points.entries()) {
-        if (index === 0) ctx.moveTo(toCanvasX(point.x), toCanvasY(point.y));
-        else ctx.lineTo(toCanvasX(point.x), toCanvasY(point.y));
-      }
+    } else if (layer.type === "marker" || isRedact(layer)) {
+      // A dashed box around brush strokes; a line through the middle hid the effect itself.
+      const bounds = layerBounds(layer);
+      ctx.setLineDash([4, 3]);
+      ctx.rect(
+        toCanvasX(bounds.x) - 2,
+        toCanvasY(bounds.y) - 2,
+        bounds.width / dpr + 4,
+        bounds.height / dpr + 4,
+      );
     }
 
     ctx.stroke();
+    ctx.setLineDash([]);
     for (const point of anchors) {
       ctx.beginPath();
       ctx.arc(toCanvasX(point.x), toCanvasY(point.y), 3, 0, Math.PI * 2);

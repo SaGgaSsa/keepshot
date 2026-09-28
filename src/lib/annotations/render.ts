@@ -242,7 +242,8 @@ function drawRedaction(
     return;
   }
   const bounds = layerBounds(layer);
-  const strength = Math.max(4, Math.round(layer.width / 3));
+  // Redaction must make text unreadable, so the blur radius scales generously with the brush.
+  const strength = Math.max(6, Math.round(layer.width / 2));
   const blockSize = Math.max(6, Math.round(layer.width / 3));
   const margin = layer.mode === "pixelate" ? blockSize : strength * 3;
   const rect = integerRect(bounds);
