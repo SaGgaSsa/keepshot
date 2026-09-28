@@ -1,5 +1,25 @@
 # Releasing KeepShot
 
+## Automated release (default)
+
+Every push to `main` runs the CI workflow (`.github/workflows/ci.yml`): Svelte/TypeScript checks,
+`cargo fmt` and `cargo clippy`. If the version in `src-tauri/tauri.conf.json` has no matching
+`vX.Y.Z` tag yet, CI also builds the signed NSIS installer with `tauri-apps/tauri-action`, creates
+the tag and GitHub release on that commit, and uploads the installer, its `.sig` and `latest.json`.
+
+To ship a new version:
+
+1. Bump the version in `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and `package.json`.
+2. Write release notes in `.github/release-notes/vX.Y.Z.md` (optional; a generic note is used otherwise).
+3. Merge to `main` and push. CI publishes the release; pushes without a version bump only run checks.
+
+The workflow needs two repository secrets (Settings › Secrets and variables › Actions):
+
+- `TAURI_SIGNING_PRIVATE_KEY`: the full contents of `keepshot-updater.key`.
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: the contents of `keepshot-updater.password`.
+
+The manual steps below remain as a fallback when CI is unavailable.
+
 ## Signing prerequisites
 
 Keep the updater signing private key and its password outside the repository:
