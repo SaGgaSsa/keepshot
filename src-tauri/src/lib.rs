@@ -133,6 +133,7 @@ pub fn run() {
             history_edit,
             history_close,
             get_settings_view,
+            settings_ready,
             set_shortcut,
             suspend_shortcuts,
             set_autostart,
@@ -436,6 +437,24 @@ struct SettingsView {
     print_screen_conflict: Option<bool>,
     default_save_folder: String,
     window_material: String,
+}
+
+#[tauri::command]
+fn settings_ready(app: tauri::AppHandle, state: tauri::State<'_, settings::SettingsState>) {
+    let pending = match state.page_ready.lock() {
+        Ok(mut ready) => {
+            *ready = true;
+            state
+                .show_pending
+                .lock()
+                .map(|mut pending| std::mem::take(&mut *pending))
+                .unwrap_or(false)
+        }
+        Err(_) => false,
+    };
+    if pending {
+        tray::show_settings(&app);
+    }
 }
 
 #[tauri::command]

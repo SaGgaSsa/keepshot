@@ -39,7 +39,14 @@
   }
 
   onMount(() => {
-    void refresh();
+    // The window stays hidden until the first paint so it never shows WebView2's white default.
+    void refresh().finally(() =>
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          invoke("settings_ready").catch((cause) => reportError("settings ready", cause));
+        }),
+      ),
+    );
     const onFocus = () => void refresh();
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);

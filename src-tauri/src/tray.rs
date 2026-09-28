@@ -75,6 +75,16 @@ pub fn update_menu(app: &AppHandle) -> Result<(), String> {
 }
 
 pub fn show_settings(app: &AppHandle) {
+    let state = app.state::<settings::SettingsState>();
+    if let Ok(ready) = state.page_ready.lock() {
+        if !*ready {
+            // The page calls `settings_ready` after its first paint and the window is shown then.
+            if let Ok(mut pending) = state.show_pending.lock() {
+                *pending = true;
+            }
+            return;
+        }
+    }
     if let Some(window) = app.get_webview_window("main") {
         if let Err(error) = window.show() {
             crate::log_error!("Could not show settings window: {error}");

@@ -33,6 +33,9 @@ pub struct SettingsState {
     pub shortcut_errors: Mutex<Vec<String>>,
     pub suspended: Mutex<bool>,
     pub window_material: Mutex<String>,
+    /// Set once the Settings page has painted; showing the window earlier flashes white.
+    pub page_ready: Mutex<bool>,
+    pub show_pending: Mutex<bool>,
 }
 
 impl Default for SettingsState {
@@ -44,6 +47,8 @@ impl Default for SettingsState {
             shortcut_errors: Mutex::new(Vec::new()),
             suspended: Mutex::new(false),
             window_material: Mutex::new("solid".to_string()),
+            page_ready: Mutex::new(false),
+            show_pending: Mutex::new(false),
         }
     }
 }
