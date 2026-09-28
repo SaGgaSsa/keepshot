@@ -45,6 +45,8 @@ pub fn run() {
                         "application/octet-stream",
                     )
                     .header("Cache-Control", "no-store")
+                    // The overlay fetch()es frames cross-origin (app origin -> frame.localhost).
+                    .header(tauri::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
                     .body(body)
                     .unwrap(),
             );

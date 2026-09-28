@@ -126,6 +126,7 @@
       if (sequence === loadSequence) loading = false;
     } catch (error) {
       if (sequence !== loadSequence) return;
+      console.error("Could not prepare capture frames", error);
       loading = false;
       showNotice(String(error));
     }
