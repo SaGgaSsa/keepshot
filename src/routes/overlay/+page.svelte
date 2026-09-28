@@ -80,6 +80,7 @@
   let strokeWidth = $state(5);
   let redactMode = $state<RedactMode>("pixelate");
   let markerPoints: PhysicalPoint[] = [];
+  let brushFree = false;
   let baseSource: BaseSource | null = null;
   let editingTextId = $state<string | null>(null);
   let editingText = $state("");
@@ -280,7 +281,7 @@
     const originY = session?.bounds.y ?? 0;
     const toCanvasX = (value: number) => (value - originX) / dpr;
     const toCanvasY = (value: number) => (value - originY) / dpr;
-    const rectLayer = isBox(layer) ? layer : isRedact(layer) ? layer : null;
+    const rectLayer = isBox(layer) ? layer : null;
     const anchors = isSegment(layer)
       ? [layer.start, layer.end]
       : rectLayer
@@ -319,6 +320,12 @@
     } else if (layer.type === "step") {
       ctx.arc(toCanvasX(layer.x), toCanvasY(layer.y), layer.radius / dpr, 0, Math.PI * 2);
     } else if (layer.type === "marker") {
+      for (const [index, point] of layer.points.entries()) {
+        if (index === 0) ctx.moveTo(toCanvasX(point.x), toCanvasY(point.y));
+        else ctx.lineTo(toCanvasX(point.x), toCanvasY(point.y));
+      }
+    } else if (isRedact(layer)) {
+      ctx.lineWidth = 2;
       for (const [index, point] of layer.points.entries()) {
         if (index === 0) ctx.moveTo(toCanvasX(point.x), toCanvasY(point.y));
         else ctx.lineTo(toCanvasX(point.x), toCanvasY(point.y));
@@ -413,20 +420,6 @@
         height: Math.max(1, height),
       });
     }
-    if (tool === "redact") {
-      const strengths = redactMode === "pixelate" ? [8, 14, 22] : [6, 12, 20];
-      const level = strokeWidth === 3 ? 0 : strokeWidth === 8 ? 2 : 1;
-      const strength = strengths[level] ?? 14;
-      return createLayer({
-        type: "redact", x, y, width: Math.max(1, width), height: Math.max(1, height),
-        mode: redactMode, strength,
-      });
-    }
-    if (tool === "marker") {
-      return createLayer({
-        type: "marker", color: activeColor, strokeWidth: markerWidth(), points: markerPoints,
-      });
-    }
     return null;
   }
 
@@ -434,6 +427,49 @@
     if (strokeWidth === 3) return 14;
     if (strokeWidth === 8) return 34;
     return 22;
+  }
+
+  function redactWidth(): number {
+    if (strokeWidth === 3) return 16;
+    if (strokeWidth === 8) return 44;
+    return 28;
+  }
+
+  function axisPoint(start: PhysicalPoint, point: PhysicalPoint): PhysicalPoint {
+    const dx = point.x - start.x;
+    const dy = point.y - start.y;
+    return Math.abs(dx) >= Math.abs(dy)
+      ? { x: point.x, y: start.y }
+      : { x: start.x, y: point.y };
+  }
+
+  function updateBrushPoints(
+    start: PhysicalPoint,
+    point: PhysicalPoint,
+    free: boolean,
+  ): PhysicalPoint[] {
+    if (!free) {
+      brushFree = false;
+      markerPoints = [start, axisPoint(start, point)];
+      return markerPoints;
+    }
+    if (!brushFree) markerPoints = [start];
+    brushFree = true;
+    const previous = markerPoints[markerPoints.length - 1];
+    if (!previous || distance(previous, point) >= 1) markerPoints = [...markerPoints, point];
+    return markerPoints;
+  }
+
+  function createBrushLayer(tool: AnnotationTool, points: PhysicalPoint[]): Layer | null {
+    if (tool === "marker") {
+      return createLayer({
+        type: "marker", color: activeColor, strokeWidth: markerWidth(), points,
+      });
+    }
+    if (tool === "redact") {
+      return createLayer({ type: "redact", points, width: redactWidth(), mode: redactMode });
+    }
+    return null;
   }
 
   function stepRadius(): number {
@@ -542,22 +578,18 @@
       gesture = null;
       beginTextEdit(null, point);
       event.preventDefault();
-    } else if (mode === "annotate" && activeTool === "marker") {
+    } else if (mode === "annotate"
+      && (activeTool === "marker" || activeTool === "redact")) {
+      brushFree = event.shiftKey;
       markerPoints = [point];
-      layerPreview = createLayer({
-        type: "marker", color: activeColor, strokeWidth: markerWidth(), points: markerPoints,
-      });
+      layerPreview = createBrushLayer(activeTool, markerPoints);
       scheduleRender();
     }
   }
 
   function sizeForLayer(layer: Layer): number {
     if (layer.type === "marker") return layer.strokeWidth <= 14 ? 3 : layer.strokeWidth <= 22 ? 5 : 8;
-    if (layer.type === "redact") {
-      const values = layer.mode === "pixelate" ? [8, 14, 22] : [6, 12, 20];
-      const index = values.indexOf(layer.strength);
-      return index === 0 ? 3 : index === 2 ? 8 : 5;
-    }
+    if (layer.type === "redact") return layer.width <= 16 ? 3 : layer.width <= 28 ? 5 : 8;
     if (layer.type === "step") return layer.radius <= 14 ? 3 : layer.radius <= 20 ? 5 : 8;
     return layer.strokeWidth;
   }
@@ -649,13 +681,9 @@
     } else if (currentGesture.mode === "resize" && currentGesture.origin && currentGesture.handle) {
       selection = resizeRect(currentGesture.origin, currentGesture.handle, dx, dy, session.bounds);
     } else if (currentGesture.mode === "annotate" && currentGesture.tool) {
-      if (currentGesture.tool === "marker") {
-        const nextPoint = constrainPoint(currentGesture.start, point, event.shiftKey);
-        const previous = markerPoints[markerPoints.length - 1];
-        if (!previous || distance(previous, nextPoint) >= 1) markerPoints = [...markerPoints, nextPoint];
-        layerPreview = createLayer({
-          type: "marker", color: activeColor, strokeWidth: markerWidth(), points: markerPoints,
-        });
+      if (currentGesture.tool === "marker" || currentGesture.tool === "redact") {
+        const points = updateBrushPoints(currentGesture.start, point, event.shiftKey);
+        layerPreview = createBrushLayer(currentGesture.tool, points);
       } else {
         layerPreview = appendLayerGesture(
           currentGesture.start, point, currentGesture.tool, event.shiftKey,
@@ -698,17 +726,11 @@
       }
     } else if (currentGesture.mode === "annotate" && currentGesture.tool) {
       let created: Layer | null;
-      if (currentGesture.tool === "marker") {
-        const finalPoint = constrainPoint(currentGesture.start, point, event.shiftKey);
-        const lastPoint = markerPoints[markerPoints.length - 1];
-        if (!lastPoint || distance(lastPoint, finalPoint) >= 1) {
-          markerPoints = [...markerPoints, finalPoint];
-        }
-        const simplified = simplifyPoints(markerPoints);
+      if (currentGesture.tool === "marker" || currentGesture.tool === "redact") {
+        const points = updateBrushPoints(currentGesture.start, point, event.shiftKey);
+        const simplified = simplifyPoints(points);
         created = distance(currentGesture.start, point) > 3 && simplified.length > 1
-          ? createLayer({
-              type: "marker", color: activeColor, strokeWidth: markerWidth(), points: simplified,
-            })
+          ? createBrushLayer(currentGesture.tool, simplified)
           : null;
       } else {
         created = appendLayerGesture(
@@ -875,12 +897,9 @@
     const selected = selectedLayer();
     if (!selected) return;
     if (selected.type === "redact") {
-      const strength = redactMode === "pixelate"
-        ? width === 3 ? 8 : width === 8 ? 22 : 14
-        : width === 3 ? 6 : width === 8 ? 20 : 12;
       const updated: Layer = {
-        id: selected.id, type: "redact", x: selected.x, y: selected.y,
-        width: selected.width, height: selected.height, mode: selected.mode, strength,
+        id: selected.id, type: "redact", points: selected.points,
+        width: width === 3 ? 16 : width === 8 ? 44 : 28, mode: selected.mode,
       };
       commitLayers(layers.map((layer) => layer.id === selected.id ? updated : layer));
       return;
@@ -906,13 +925,9 @@
     redactMode = mode;
     const selected = selectedLayer();
     if (!isRedact(selected)) return;
-    const level = sizeForLayer(selected);
-    const strength = mode === "pixelate"
-      ? level === 3 ? 8 : level === 8 ? 22 : 14
-      : level === 3 ? 6 : level === 8 ? 20 : 12;
     const updated: Layer = {
-      id: selected.id, type: "redact", x: selected.x, y: selected.y,
-      width: selected.width, height: selected.height, mode, strength,
+      id: selected.id, type: "redact", points: selected.points,
+      width: selected.width, mode,
     };
     commitLayers(layers.map((layer) => layer.id === selected.id ? updated : layer));
   }

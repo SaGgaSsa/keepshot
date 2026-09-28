@@ -42,12 +42,9 @@ export type RedactMode = "pixelate" | "blur";
 export type RedactLayer = {
   id: string;
   type: "redact";
-  x: number;
-  y: number;
+  points: PhysicalPoint[];
   width: number;
-  height: number;
   mode: RedactMode;
-  strength: number;
 };
 export type StepLayer = Base & {
   type: "step";
@@ -131,8 +128,8 @@ export function createLayer(layer: NewLayer): Layer {
       };
     case "redact":
       return {
-        id, type: "redact", x: layer.x, y: layer.y, width: layer.width,
-        height: layer.height, mode: layer.mode, strength: layer.strength,
+        id, type: "redact", points: layer.points.map((point) => ({ x: point.x, y: point.y })),
+        width: layer.width, mode: layer.mode,
       };
     case "step":
       return {
@@ -176,10 +173,11 @@ export function layerBounds(layer: Layer): PhysicalRect {
       return pointBounds([layer.start, layer.end], layer.strokeWidth / 2);
     case "rect":
     case "ellipse":
-    case "redact":
       return {
         x: layer.x, y: layer.y, width: layer.width, height: layer.height,
       };
+    case "redact":
+      return pointBounds(layer.points, layer.width / 2);
     case "text": {
       const lines = layer.text.split("\n");
       const width = lines.reduce(
@@ -271,7 +269,7 @@ export function hitTest(layer: Layer, point: PhysicalPoint, tolerance = 6): bool
     case "marker":
       return polylineDistance(point, layer.points) <= tolerance + layer.strokeWidth / 2;
     case "redact":
-      return insideExpanded(point, layer, tolerance);
+      return polylineDistance(point, layer.points) <= layer.width / 2 + tolerance;
     case "step":
       return Math.hypot(point.x - layer.x, point.y - layer.y) <= layer.radius + tolerance;
     default:
@@ -378,8 +376,9 @@ export function moveLayer(layer: Layer, dx: number, dy: number): Layer {
       };
     case "redact":
       return {
-        id: layer.id, type: "redact", x: layer.x + dx, y: layer.y + dy,
-        width: layer.width, height: layer.height, mode: layer.mode, strength: layer.strength,
+        id: layer.id, type: "redact",
+        points: layer.points.map((point) => movePoint(point, dx, dy)),
+        width: layer.width, mode: layer.mode,
       };
     case "step":
       return {
@@ -424,15 +423,9 @@ export function resizeLayer(layer: Layer, handle: ResizeHandle, dx: number, dy: 
         x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height,
       };
     }
-    case "redact": {
-      const bounds = resizeBounds(layer, handle, dx, dy);
-      return {
-        id: layer.id, type: "redact", x: bounds.x, y: bounds.y,
-        width: bounds.width, height: bounds.height, mode: layer.mode, strength: layer.strength,
-      };
-    }
     case "text":
     case "marker":
+    case "redact":
     case "step":
       return layer;
     default:
@@ -441,7 +434,7 @@ export function resizeLayer(layer: Layer, handle: ResizeHandle, dx: number, dy: 
 }
 
 function resizeBounds(
-  layer: RectangleLayer | EllipseLayer | RedactLayer,
+  layer: RectangleLayer | EllipseLayer,
   handle: ResizeHandle,
   dx: number,
   dy: number,
@@ -471,13 +464,13 @@ export function annotationHandle(
       return handles.find((item) => distance(point, item.point) <= tolerance)?.handle ?? null;
     }
     case "rect":
-    case "ellipse":
-    case "redact": {
+    case "ellipse": {
       const points = rectHandlePoints(layer);
       return points.find((item) => distance(point, item.point) <= tolerance)?.handle ?? null;
     }
     case "text":
     case "marker":
+    case "redact":
     case "step":
       return null;
     default:
@@ -486,7 +479,7 @@ export function annotationHandle(
 }
 
 function rectHandlePoints(
-  layer: RectangleLayer | EllipseLayer | RedactLayer,
+  layer: RectangleLayer | EllipseLayer,
 ): { handle: ResizeHandle; point: PhysicalPoint }[] {
   const { x, y, width, height } = layer;
   return [
@@ -550,7 +543,9 @@ function parseLayer(value: unknown): Layer {
         text: value.text, fontSize: positiveField(value, "fontSize"),
       };
     case "marker":
-      if (!Array.isArray(value.points)) throw new TypeError("Invalid marker points");
+      if (!Array.isArray(value.points) || value.points.length === 0) {
+        throw new TypeError("Invalid marker points");
+      }
       return {
         id, type: "marker", color: stringField(value, "color"),
         strokeWidth: positiveField(value, "strokeWidth"),
@@ -560,9 +555,12 @@ function parseLayer(value: unknown): Layer {
       if (value.mode !== "pixelate" && value.mode !== "blur") {
         throw new TypeError("Invalid redaction mode");
       }
+      if (!Array.isArray(value.points) || value.points.length === 0) {
+        throw new TypeError("Invalid redaction points");
+      }
       return {
-        id, type: "redact", ...rectFields(value), mode: value.mode,
-        strength: positiveField(value, "strength"),
+        id, type: "redact", points: value.points.map(parsePoint),
+        width: positiveField(value, "width"), mode: value.mode,
       };
     case "step":
       if (!Number.isInteger(value.number) || (value.number as number) < 1) {

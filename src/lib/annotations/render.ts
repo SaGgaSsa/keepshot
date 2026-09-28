@@ -1,6 +1,6 @@
 import type { PhysicalPoint, PhysicalRect } from "$lib/overlay/geometry";
 import type { ArrowLayer, Layer, RedactLayer } from "./model";
-import { quadraticPoint } from "./model";
+import { layerBounds, quadraticPoint } from "./model";
 
 export type RenderTransform = { originX: number; originY: number; scale: number };
 export type BaseFrame = PhysicalRect & { canvas: HTMLCanvasElement };
@@ -27,7 +27,11 @@ export function createFrameBaseSource(
     canvasFor(rect) {
       const key = rectKey(rect);
       const cached = canvases.get(key);
-      if (cached) return cached;
+      if (cached) {
+        canvases.delete(key);
+        canvases.set(key, cached);
+        return cached;
+      }
       const canvas = document.createElement("canvas");
       canvas.width = Math.max(1, Math.ceil(rect.width));
       canvas.height = Math.max(1, Math.ceil(rect.height));
@@ -54,7 +58,7 @@ export function createFrameBaseSource(
         );
       }
       canvases.set(key, canvas);
-      if (canvases.size > 12) {
+      if (canvases.size > 8) {
         const oldest = canvases.keys().next().value;
         if (oldest) canvases.delete(oldest);
       }
@@ -231,69 +235,101 @@ function drawRedaction(
   layer: RedactLayer,
   source: BaseSource,
 ): void {
-  const cached = redactionCanvases.get(source)?.get(JSON.stringify(layer));
+  const key = redactionKey(layer);
+  const cached = redactionCanvases.get(source)?.get(key);
   if (cached) {
-    ctx.beginPath();
-    ctx.rect(layer.x, layer.y, layer.width, layer.height);
-    ctx.clip();
-    ctx.drawImage(cached, Math.floor(layer.x), Math.floor(layer.y));
+    ctx.drawImage(cached.canvas, cached.rect.x, cached.rect.y);
     return;
   }
-  const left = Math.floor(layer.x);
-  const top = Math.floor(layer.y);
-  const right = Math.ceil(layer.x + layer.width);
-  const bottom = Math.ceil(layer.y + layer.height);
-  const rect = { x: left, y: top, width: right - left, height: bottom - top };
-  const margin = layer.mode === "pixelate"
-    ? Math.ceil(layer.strength)
-    : Math.ceil(layer.strength * 3);
-  const expandedRect = {
-    x: rect.x - margin,
-    y: rect.y - margin,
-    width: rect.width + margin * 2,
-    height: rect.height + margin * 2,
-  };
-  const original = source.canvasFor(expandedRect);
+  const bounds = layerBounds(layer);
+  const strength = Math.max(4, Math.round(layer.width / 3));
+  const blockSize = Math.max(6, Math.round(layer.width / 3));
+  const margin = layer.mode === "pixelate" ? blockSize : strength * 3;
+  const rect = integerRect(bounds);
+  const sampleRect = expandRect(rect, margin);
+  const original = source.canvasFor(sampleRect);
   const output = document.createElement("canvas");
   output.width = rect.width;
   output.height = rect.height;
   const out = output.getContext("2d");
   if (!out) return;
   if (layer.mode === "pixelate") {
-    pixelate(out, original, layer, expandedRect, rect, source);
+    pixelate(out, original, sampleRect, rect, blockSize, source);
   } else {
-    blur(out, original, layer.strength, margin, rect.width, rect.height);
+    blur(out, original, sampleRect, rect, strength);
   }
+  maskRedaction(out, layer, rect);
   let cache = redactionCanvases.get(source);
   if (!cache) {
     cache = new Map();
     redactionCanvases.set(source, cache);
   }
-  cache.set(JSON.stringify(layer), output);
-  if (cache.size > 32) {
+  cache.set(key, { canvas: output, rect });
+  if (cache.size > 4) {
     const oldest = cache.keys().next().value;
     if (oldest) cache.delete(oldest);
   }
-  ctx.beginPath();
-  ctx.rect(layer.x, layer.y, layer.width, layer.height);
-  ctx.clip();
   ctx.drawImage(output, rect.x, rect.y);
 }
 
-const redactionCanvases = new WeakMap<BaseSource, Map<string, HTMLCanvasElement>>();
+type CachedRedaction = { canvas: HTMLCanvasElement; rect: PhysicalRect };
+const redactionCanvases = new WeakMap<BaseSource, Map<string, CachedRedaction>>();
+
+function redactionKey(layer: RedactLayer): string {
+  return JSON.stringify({ points: layer.points, width: layer.width, mode: layer.mode });
+}
+
+function integerRect(rect: PhysicalRect): PhysicalRect {
+  const x = Math.floor(rect.x);
+  const y = Math.floor(rect.y);
+  const right = Math.ceil(rect.x + rect.width);
+  const bottom = Math.ceil(rect.y + rect.height);
+  return { x, y, width: right - x, height: bottom - y };
+}
+
+function expandRect(rect: PhysicalRect, margin: number): PhysicalRect {
+  return {
+    x: rect.x - margin,
+    y: rect.y - margin,
+    width: rect.width + margin * 2,
+    height: rect.height + margin * 2,
+  };
+}
+
+function maskRedaction(
+  ctx: CanvasRenderingContext2D,
+  layer: RedactLayer,
+  rect: PhysicalRect,
+): void {
+  ctx.globalCompositeOperation = "destination-in";
+  ctx.strokeStyle = "#fff";
+  ctx.lineWidth = layer.width;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  const first = layer.points[0];
+  if (!first) return;
+  ctx.moveTo(first.x - rect.x, first.y - rect.y);
+  for (let index = 1; index < layer.points.length; index += 1) {
+    const point = layer.points[index];
+    if (point) ctx.lineTo(point.x - rect.x, point.y - rect.y);
+  }
+  if (layer.points.length === 1) ctx.lineTo(first.x - rect.x + 0.01, first.y - rect.y + 0.01);
+  ctx.stroke();
+  ctx.globalCompositeOperation = "source-over";
+}
 
 function pixelate(
   out: CanvasRenderingContext2D,
   original: HTMLCanvasElement,
-  layer: RedactLayer,
   sampleRect: PhysicalRect,
   targetRect: PhysicalRect,
+  block: number,
   source: BaseSource,
 ): void {
   const input = original.getContext("2d")?.getImageData(0, 0, original.width, original.height);
   if (!input) return;
   const output = out.createImageData(out.canvas.width, out.canvas.height);
-  const block = Math.max(1, Math.round(layer.strength));
   const gridX = Math.floor((targetRect.x - source.originX) / block) * block + source.originX;
   const gridY = Math.floor((targetRect.y - source.originY) / block) * block + source.originY;
   for (let blockY = gridY; blockY < targetRect.y + targetRect.height; blockY += block) {
@@ -337,10 +373,9 @@ function pixelate(
 function blur(
   out: CanvasRenderingContext2D,
   original: HTMLCanvasElement,
+  sampleRect: PhysicalRect,
+  targetRect: PhysicalRect,
   strength: number,
-  margin: number,
-  width: number,
-  height: number,
 ): void {
   const expanded = document.createElement("canvas");
   expanded.width = original.width;
@@ -355,7 +390,19 @@ function blur(
   if (!blurredContext) return;
   blurredContext.filter = `blur(${strength}px)`;
   blurredContext.drawImage(expanded, 0, 0);
-  out.drawImage(blurred, margin, margin, width, height, 0, 0, width, height);
+  const sourceX = targetRect.x - sampleRect.x;
+  const sourceY = targetRect.y - sampleRect.y;
+  out.drawImage(
+    blurred,
+    sourceX,
+    sourceY,
+    targetRect.width,
+    targetRect.height,
+    0,
+    0,
+    targetRect.width,
+    targetRect.height,
+  );
 }
 
 function drawStep(
