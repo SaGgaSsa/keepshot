@@ -1,14 +1,21 @@
+use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager};
 
 use crate::{overlay, settings};
 
+/// A simplified two-layer mark that stays legible at 16-20 px, unlike the full app icon.
+fn tray_icon() -> Result<Image<'static>, String> {
+    let decoded = image::load_from_memory(include_bytes!("../icons/tray-32.png"))
+        .map_err(|error| format!("Could not decode the tray icon: {error}"))?
+        .into_rgba8();
+    let (width, height) = decoded.dimensions();
+    Ok(Image::new_owned(decoded.into_raw(), width, height))
+}
+
 pub fn build(app: &AppHandle, start_capture: fn(AppHandle)) -> Result<(), String> {
-    let icon = app
-        .default_window_icon()
-        .cloned()
-        .ok_or_else(|| "The default application icon is unavailable".to_string())?;
+    let icon = tray_icon()?;
     let menu = make_menu(app)?;
     TrayIconBuilder::with_id("main")
         .icon(icon)
