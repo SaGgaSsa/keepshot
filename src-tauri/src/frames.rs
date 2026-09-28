@@ -1,14 +1,14 @@
-use std::collections::HashMap;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-use crate::capture::{CapturedFrame, MonitorInfo};
+use crate::capture::{CapturedFrame, MonitorInfo, VirtualBounds};
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
+pub const BMP_PIXEL_OFFSET: usize = 122;
 
 pub fn next_session_id() -> String {
     format!(
@@ -20,9 +20,18 @@ pub fn next_session_id() -> String {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PendingFrame {
+pub struct PendingFrames {
     pub session: String,
-    pub monitor: MonitorInfo,
+    pub bounds: VirtualBounds,
+    pub monitors: Vec<MonitorInfo>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrontendImageTiming {
+    pub label: String,
+    pub load_ms: f64,
+    pub decode_ms: f64,
 }
 
 #[derive(Clone, Serialize)]
@@ -36,17 +45,18 @@ pub struct MonitorMetrics {
     pub height: u32,
     pub scale_factor: f32,
     pub capture_ms: f64,
-    pub encode_ms: f64,
-    pub bytes: usize,
-    pub shown_ms: f64,
+    pub bmp_ms: f64,
+    pub load_ms: f64,
+    pub decode_ms: f64,
 }
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CaptureMetrics {
     pub session: String,
-    pub reconciliation_ms: f64,
     pub capture_total_ms: f64,
+    pub emit_ms: f64,
+    pub shown_ms: f64,
     pub monitors: Vec<MonitorMetrics>,
 }
 
@@ -54,9 +64,10 @@ pub struct CaptureMetrics {
 pub struct FrameEntry {
     pub monitor: MonitorInfo,
     pub bytes: Arc<Vec<u8>>,
+    pub offset_x: u32,
+    pub offset_y: u32,
     pub capture_ms: f64,
-    pub encode_ms: f64,
-    pub shown_ms: Option<f64>,
+    pub bmp_ms: f64,
 }
 
 impl FrameEntry {
@@ -64,25 +75,10 @@ impl FrameEntry {
         Self {
             monitor: frame.monitor,
             bytes: Arc::new(frame.bytes),
+            offset_x: 0,
+            offset_y: 0,
             capture_ms: frame.capture_ms,
-            encode_ms: frame.encode_ms,
-            shown_ms: None,
-        }
-    }
-
-    fn metrics(&self) -> MonitorMetrics {
-        MonitorMetrics {
-            label: self.monitor.label.clone(),
-            name: self.monitor.name.clone(),
-            x: self.monitor.x,
-            y: self.monitor.y,
-            width: self.monitor.width,
-            height: self.monitor.height,
-            scale_factor: self.monitor.scale_factor,
-            capture_ms: self.capture_ms,
-            encode_ms: self.encode_ms,
-            bytes: self.bytes.len(),
-            shown_ms: self.shown_ms.unwrap_or_default(),
+            bmp_ms: frame.bmp_ms,
         }
     }
 }
@@ -90,10 +86,11 @@ impl FrameEntry {
 struct FrameSession {
     id: String,
     started: Instant,
-    reconciliation_ms: f64,
     capture_total_ms: f64,
-    entries: HashMap<String, FrameEntry>,
+    emit_ms: Option<f64>,
     metrics_emitted: bool,
+    bounds: VirtualBounds,
+    entries: HashMap<String, FrameEntry>,
 }
 
 #[derive(Default)]
@@ -113,36 +110,69 @@ impl FrameStore {
         &self,
         id: String,
         started: Instant,
-        reconciliation_ms: f64,
         capture_total_ms: f64,
-        entries: Vec<FrameEntry>,
+        bounds: VirtualBounds,
+        frames: Vec<FrameEntry>,
     ) -> Result<(), String> {
         let mut current = self
             .inner
             .lock()
             .map_err(|_| "Frame state is unavailable".to_string())?;
-        let entries = entries
-            .into_iter()
-            .map(|entry| (entry.monitor.label.clone(), entry))
-            .collect();
+        let mut entries = HashMap::with_capacity(frames.len());
+        for mut frame in frames {
+            frame.offset_x = u32::try_from(i64::from(frame.monitor.x) - i64::from(bounds.x))
+                .map_err(|_| "Monitor x offset is invalid".to_string())?;
+            frame.offset_y = u32::try_from(i64::from(frame.monitor.y) - i64::from(bounds.y))
+                .map_err(|_| "Monitor y offset is invalid".to_string())?;
+            entries.insert(frame.monitor.label.clone(), frame);
+        }
         *current = Some(FrameSession {
             id,
             started,
-            reconciliation_ms,
             capture_total_ms,
-            entries,
+            emit_ms: None,
             metrics_emitted: false,
+            bounds,
+            entries,
         });
         Ok(())
     }
 
-    pub fn pending(&self, label: &str) -> Option<PendingFrame> {
+    pub fn set_emit_time(&self) -> Result<(), String> {
+        let mut current = self
+            .inner
+            .lock()
+            .map_err(|_| "Frame state is unavailable".to_string())?;
+        if let Some(session) = current.as_mut() {
+            session.emit_ms = Some(session.started.elapsed().as_secs_f64() * 1000.0);
+        }
+        Ok(())
+    }
+
+    pub fn elapsed_ms(&self) -> Result<f64, String> {
+        let current = self
+            .inner
+            .lock()
+            .map_err(|_| "Frame state is unavailable".to_string())?;
+        current
+            .as_ref()
+            .map(|session| session.started.elapsed().as_secs_f64() * 1000.0)
+            .ok_or_else(|| "Capture session is no longer active".to_string())
+    }
+
+    pub fn pending(&self) -> Option<PendingFrames> {
         let current = self.inner.lock().ok()?;
         let session = current.as_ref()?;
-        let frame = session.entries.get(label)?;
-        Some(PendingFrame {
+        let mut monitors: Vec<_> = session
+            .entries
+            .values()
+            .map(|frame| frame.monitor.clone())
+            .collect();
+        monitors.sort_by(|left, right| left.label.cmp(&right.label));
+        Some(PendingFrames {
             session: session.id.clone(),
-            monitor: frame.monitor.clone(),
+            bounds: session.bounds,
+            monitors,
         })
     }
 
@@ -158,44 +188,109 @@ impl FrameStore {
             .map(|frame| frame.bytes.as_ref().clone())
     }
 
+    pub fn validate_ready(
+        &self,
+        session_id: &str,
+        timings: &[FrontendImageTiming],
+    ) -> Result<(), String> {
+        let current = self
+            .inner
+            .lock()
+            .map_err(|_| "Frame state is unavailable".to_string())?;
+        let session = current
+            .as_ref()
+            .filter(|session| session.id == session_id)
+            .ok_or_else(|| "Capture session is no longer active".to_string())?;
+        let expected: HashSet<_> = session.entries.keys().map(String::as_str).collect();
+        let received: HashSet<_> = timings.iter().map(|timing| timing.label.as_str()).collect();
+        if expected != received || timings.len() != expected.len() {
+            return Err("The overlay did not decode every monitor frame".to_string());
+        }
+        if timings
+            .iter()
+            .any(|timing| !timing.load_ms.is_finite() || !timing.decode_ms.is_finite())
+        {
+            return Err("Overlay image timings are invalid".to_string());
+        }
+        Ok(())
+    }
+
     pub fn mark_ready(
         &self,
-        label: &str,
         session_id: &str,
+        timings: Vec<FrontendImageTiming>,
+        shown_ms: f64,
     ) -> Result<Option<CaptureMetrics>, String> {
         let mut current = self
             .inner
             .lock()
             .map_err(|_| "Frame state is unavailable".to_string())?;
-        let Some(session) = current.as_mut() else {
+        let Some(session) = current.as_mut().filter(|session| session.id == session_id) else {
             return Ok(None);
         };
-        if session.id != session_id {
+        if session.metrics_emitted {
             return Ok(None);
         }
-        let Some(frame) = session.entries.get_mut(label) else {
-            return Ok(None);
-        };
-        if frame.shown_ms.is_none() {
-            frame.shown_ms = Some(session.started.elapsed().as_secs_f64() * 1000.0);
+        let timing_map: HashMap<_, _> = timings
+            .into_iter()
+            .map(|timing| (timing.label.clone(), timing))
+            .collect();
+        let mut monitors = Vec::with_capacity(session.entries.len());
+        for (label, frame) in &session.entries {
+            let Some(timing) = timing_map.get(label) else {
+                return Err("A monitor timing was not provided".to_string());
+            };
+            monitors.push(MonitorMetrics {
+                label: label.clone(),
+                name: frame.monitor.name.clone(),
+                x: frame.monitor.x,
+                y: frame.monitor.y,
+                width: frame.monitor.width,
+                height: frame.monitor.height,
+                scale_factor: frame.monitor.scale_factor,
+                capture_ms: frame.capture_ms,
+                bmp_ms: frame.bmp_ms,
+                load_ms: timing.load_ms,
+                decode_ms: timing.decode_ms,
+            });
         }
-        if session.metrics_emitted
-            || session
-                .entries
-                .values()
-                .any(|entry| entry.shown_ms.is_none())
-        {
-            return Ok(None);
-        }
+        monitors.sort_by(|left, right| left.label.cmp(&right.label));
         session.metrics_emitted = true;
-        let mut monitors: Vec<_> = session.entries.values().map(FrameEntry::metrics).collect();
-        monitors.sort_by(|a, b| a.label.cmp(&b.label));
         Ok(Some(CaptureMetrics {
             session: session.id.clone(),
-            reconciliation_ms: session.reconciliation_ms,
             capture_total_ms: session.capture_total_ms,
+            emit_ms: session.emit_ms.unwrap_or_default(),
+            shown_ms,
             monitors,
         }))
+    }
+
+    pub fn snapshot(&self) -> Result<(String, VirtualBounds, Vec<FrameEntry>), String> {
+        let current = self
+            .inner
+            .lock()
+            .map_err(|_| "Frame state is unavailable".to_string())?;
+        let session = current
+            .as_ref()
+            .ok_or_else(|| "There is no active capture to export".to_string())?;
+        Ok((
+            session.id.clone(),
+            session.bounds,
+            session.entries.values().cloned().collect(),
+        ))
+    }
+
+    pub fn clear_if_session(&self, session_id: &str) -> Result<bool, String> {
+        let mut current = self
+            .inner
+            .lock()
+            .map_err(|_| "Frame state is unavailable".to_string())?;
+        if !matches!(current.as_ref(), Some(session) if session.id == session_id) {
+            return Ok(false);
+        }
+        *current = None;
+        self.busy.store(false, Ordering::Release);
+        Ok(true)
     }
 
     pub fn clear(&self) -> Result<(), String> {

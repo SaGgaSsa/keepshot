@@ -30,7 +30,7 @@
   --color-glass-rim: rgba(255, 255, 255, 0.12);
   --color-glass-ambient: rgba(255, 255, 255, 0.06);
   --color-divider: rgba(255, 255, 255, 0.08);
-  --color-dim-overlay: rgba(10, 12, 16, 0.35);
+  --color-dim-overlay: rgba(10, 12, 16, 0.45);
 
   --font-sans: Inter, "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;

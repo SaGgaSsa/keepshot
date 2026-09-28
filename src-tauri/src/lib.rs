@@ -1,9 +1,12 @@
 mod capture;
 mod frames;
+mod output;
 mod overlay;
 
+use std::fs;
 use std::time::Instant;
 use tauri::{Emitter, Manager};
+use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 const CAPTURE_SHORTCUT_MODIFIERS: Modifiers = Modifiers::CONTROL.union(Modifiers::SHIFT);
@@ -18,6 +21,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(frames::FrameStore::default())
         .manage(overlay::OverlayRegistry::default())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .register_asynchronous_uri_scheme_protocol("frame", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
             let label = request.uri().path().trim_start_matches('/').to_string();
@@ -54,13 +58,17 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             overlay_ready,
             pending_frame,
-            close_overlays
+            close_overlays,
+            copy_selection,
+            save_selection,
+            cursor_position
         ])
         .setup(|app| {
             app.global_shortcut().register(capture_shortcut())?;
-            match capture::monitor_infos()
-                .and_then(|monitors| overlay::reconcile(app.handle(), &monitors).map(|_| ()))
-            {
+            match capture::monitor_infos().and_then(|monitors| {
+                let bounds = capture::virtual_bounds(&monitors)?;
+                overlay::reconcile(app.handle(), &monitors, bounds).map(|_| ())
+            }) {
                 Ok(()) => {}
                 Err(error) => eprintln!("Failed to initialize capture overlays: {error}"),
             }
@@ -71,77 +79,37 @@ pub fn run() {
 }
 
 #[tauri::command]
-fn pending_frame(
-    label: String,
-    state: tauri::State<'_, frames::FrameStore>,
-) -> Option<frames::PendingFrame> {
-    state.pending(&label)
+fn pending_frame(state: tauri::State<'_, frames::FrameStore>) -> Option<frames::PendingFrames> {
+    state.pending()
 }
 
 #[tauri::command]
 fn overlay_ready(
     app: tauri::AppHandle,
-    label: String,
     session: String,
+    timings: Vec<frames::FrontendImageTiming>,
     state: tauri::State<'_, frames::FrameStore>,
 ) -> Result<(), String> {
-    let Some(pending) = state.pending(&label) else {
-        return Ok(());
-    };
-    if pending.session != session {
-        return Ok(());
-    }
+    state.validate_ready(&session, &timings)?;
     let window = app
-        .get_webview_window(&label)
-        .ok_or_else(|| format!("Overlay {label} no longer exists"))?;
+        .get_webview_window("overlay")
+        .ok_or_else(|| "Capture overlay no longer exists".to_string())?;
     window
         .show()
-        .map_err(|error| format!("Could not show {label}: {error}"))?;
-    if !matches!(state.pending(&label), Some(current) if current.session == session) {
+        .map_err(|error| format!("Could not show capture overlay: {error}"))?;
+    if !matches!(state.pending(), Some(current) if current.session == session) {
         if let Err(error) = window.hide() {
-            eprintln!("Could not hide stale overlay {label}: {error}");
+            eprintln!("Could not hide stale capture overlay: {error}");
         }
         return Ok(());
     }
-    let cursor = app.cursor_position().ok();
-    let cursor_monitor = cursor.and_then(|position| {
-        if position.x >= pending.monitor.x as f64
-            && position.y >= pending.monitor.y as f64
-            && position.x < pending.monitor.x as f64 + pending.monitor.width as f64
-            && position.y < pending.monitor.y as f64 + pending.monitor.height as f64
-        {
-            Some(label.clone())
-        } else {
-            None
-        }
-    });
-    if cursor_monitor.as_deref() == Some(label.as_str()) {
-        if let Err(error) = window.set_focus() {
-            eprintln!("Could not focus cursor monitor overlay {label}: {error}");
-        }
+    let shown_ms = state.elapsed_ms()?;
+    if let Err(error) = window.set_focus() {
+        eprintln!("Could not focus capture overlay: {error}");
     }
-    let Some(metrics) = state.mark_ready(&label, &session)? else {
+    let Some(metrics) = state.mark_ready(&session, timings, shown_ms)? else {
         return Ok(());
     };
-    if cursor_monitor.is_none() {
-        if let Some(target) = cursor.and_then(|position| {
-            metrics.monitors.iter().find(|monitor| {
-                position.x >= monitor.x as f64
-                    && position.y >= monitor.y as f64
-                    && position.x < monitor.x as f64 + monitor.width as f64
-                    && position.y < monitor.y as f64 + monitor.height as f64
-            })
-        }) {
-            if let Some(target_window) = app.get_webview_window(&target.label) {
-                if let Err(error) = target_window.set_focus() {
-                    eprintln!(
-                        "Could not focus cursor monitor overlay {}: {error}",
-                        target.label
-                    );
-                }
-            }
-        }
-    }
     println!(
         "Capture metrics: {}",
         serde_json::to_string(&metrics).unwrap_or_default()
@@ -157,18 +125,99 @@ fn close_overlays(
     app: tauri::AppHandle,
     state: tauri::State<'_, frames::FrameStore>,
 ) -> Result<(), String> {
+    close_overlay_session(&app, &state)
+}
+
+#[tauri::command]
+async fn copy_selection(
+    app: tauri::AppHandle,
+    rect: output::SelectionRect,
+    state: tauri::State<'_, frames::FrameStore>,
+) -> Result<(), String> {
+    let (session, bounds, frames) = state.snapshot()?;
+    let image = tauri::async_runtime::spawn_blocking(move || output::compose(bounds, frames, rect))
+        .await
+        .map_err(|error| format!("Image composition task failed: {error}"))??;
+    let clipboard_image = tauri::image::Image::new(image.as_raw(), image.width(), image.height());
+    app.clipboard()
+        .write_image(&clipboard_image)
+        .map_err(|error| format!("Could not copy selection: {error}"))?;
+    close_overlay_session_for(&app, &app.state::<frames::FrameStore>(), &session)
+}
+
+#[tauri::command]
+async fn save_selection(
+    app: tauri::AppHandle,
+    rect: output::SelectionRect,
+    state: tauri::State<'_, frames::FrameStore>,
+) -> Result<String, String> {
+    let (session, bounds, frames) = state.snapshot()?;
+    let directory = app
+        .path()
+        .picture_dir()
+        .map_err(|error| format!("Could not find the Pictures folder: {error}"))?
+        .join("KeepShot");
+    let saved_path = tauri::async_runtime::spawn_blocking(move || {
+        fs::create_dir_all(&directory)
+            .map_err(|error| format!("Could not create {}: {error}", directory.display()))?;
+        let image = output::compose(bounds, frames, rect)?;
+        let filename = format!(
+            "KeepShot_{}.png",
+            chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")
+        );
+        let path = output::unique_capture_path(&directory, &filename);
+        output::save_png(&path, &image)?;
+        Ok::<_, String>(path.display().to_string())
+    })
+    .await
+    .map_err(|error| format!("Image save task failed: {error}"))??;
+    close_overlay_session_for(&app, &app.state::<frames::FrameStore>(), &session)?;
+    Ok(saved_path)
+}
+
+#[derive(serde::Serialize)]
+struct CursorPosition {
+    x: f64,
+    y: f64,
+}
+
+#[tauri::command]
+fn cursor_position(app: tauri::AppHandle) -> Result<CursorPosition, String> {
+    let position = app
+        .cursor_position()
+        .map_err(|error| format!("Could not read cursor position: {error}"))?;
+    Ok(CursorPosition {
+        x: position.x,
+        y: position.y,
+    })
+}
+
+fn close_overlay_session(app: &tauri::AppHandle, state: &frames::FrameStore) -> Result<(), String> {
     state.clear()?;
-    for (label, window) in app.webview_windows() {
-        if label.starts_with("overlay-") {
-            if let Err(error) = window.emit("overlay:clear", ()) {
-                eprintln!("Failed to notify {label} that its frame was cleared: {error}");
-            }
-            if let Err(error) = window.hide() {
-                eprintln!("Failed to hide {label}: {error}");
-            }
-        }
+    notify_overlay_closed(app);
+    Ok(())
+}
+
+fn close_overlay_session_for(
+    app: &tauri::AppHandle,
+    state: &frames::FrameStore,
+    session: &str,
+) -> Result<(), String> {
+    if state.clear_if_session(session)? {
+        notify_overlay_closed(app);
     }
     Ok(())
+}
+
+fn notify_overlay_closed(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("overlay") {
+        if let Err(error) = window.emit("overlay:clear", ()) {
+            eprintln!("Failed to notify capture overlay that its frame was cleared: {error}");
+        }
+        if let Err(error) = window.hide() {
+            eprintln!("Failed to hide capture overlay: {error}");
+        }
+    }
 }
 
 fn start_capture(app: tauri::AppHandle) {
@@ -209,50 +258,45 @@ fn start_capture(app: tauri::AppHandle) {
 
 fn capture_session(app: tauri::AppHandle, started: Instant) -> Result<(), String> {
     let infos = capture::monitor_infos()?;
-    let reconcile_started = Instant::now();
-    overlay::reconcile(&app, &infos)?;
-    let reconciliation_ms = reconcile_started.elapsed().as_secs_f64() * 1000.0;
+    let bounds = capture::virtual_bounds(&infos)?;
+    overlay::reconcile(&app, &infos, bounds)?;
     let capture_started = Instant::now();
-    let captured = capture::capture_all()?;
+    let captured = capture::capture_all(&infos)?;
     let capture_total_ms = capture_started.elapsed().as_secs_f64() * 1000.0;
     let session = frames::next_session_id();
     let pending: Vec<_> = captured.into_iter().map(frames::FrameEntry::new).collect();
     app.state::<frames::FrameStore>().begin(
         session.clone(),
         started,
-        reconciliation_ms,
         capture_total_ms,
-        pending.clone(),
+        bounds,
+        pending,
     )?;
-    for frame in pending {
-        let label = frame.monitor.label.clone();
-        if let Err(error) = app.emit_to(
-            &label,
-            "overlay:frame",
-            frames::PendingFrame {
-                session: session.clone(),
-                monitor: frame.monitor,
-            },
-        ) {
-            eprintln!("Failed to notify {label} about its capture frame: {error}");
-        }
+    let store = app.state::<frames::FrameStore>();
+    let payload = store
+        .pending()
+        .ok_or_else(|| "Captured frame session was not available".to_string())?;
+    if let Err(error) = store.set_emit_time() {
+        eprintln!("Could not record overlay event time: {error}");
     }
-    let _ = app.emit_to("main", "capture:started", session);
+    if let Err(error) = app.emit_to("overlay", "overlay:frame", payload) {
+        eprintln!("Failed to notify capture overlay about the new session: {error}");
+    }
     Ok(())
 }
 
 fn any_overlay_visible(app: &tauri::AppHandle) -> bool {
-    app.webview_windows().iter().any(|(label, window)| {
-        label.starts_with("overlay-") && window.is_visible().unwrap_or(false)
-    })
+    app.get_webview_window("overlay")
+        .is_some_and(|window| window.is_visible().unwrap_or(false))
 }
 
 fn hide_all_overlays(app: &tauri::AppHandle) {
-    for (label, window) in app.webview_windows() {
-        if label.starts_with("overlay-") {
-            if let Err(error) = window.hide() {
-                eprintln!("Failed to hide {label}: {error}");
-            }
+    if let Some(window) = app.get_webview_window("overlay") {
+        if let Err(error) = window.emit("overlay:clear", ()) {
+            eprintln!("Failed to clear capture overlay contents: {error}");
+        }
+        if let Err(error) = window.hide() {
+            eprintln!("Failed to hide capture overlay: {error}");
         }
     }
 }
