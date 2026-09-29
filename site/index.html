@@ -6,7 +6,7 @@
     <title>KeepShot — screenshots with a memory</title>
     <meta
       name="description"
-      content="A lightweight, open source screenshot tool for Windows with a local capture history and re-editable annotations."
+      content="A lightweight, open source screenshot tool for Windows and Linux with a local capture history and re-editable annotations."
     />
     <meta name="color-scheme" content="dark" />
     <meta name="theme-color" content="#131316" />
@@ -38,7 +38,7 @@
         <img class="hero-icon" src="icon.svg" alt="" width="88" height="88" />
         <h1>Screenshots with a memory.</h1>
         <p class="lede">
-          A lightweight, open source screenshot tool for Windows. Select, annotate, copy — and
+          A lightweight, open source screenshot tool for Windows and Linux. Select, annotate, copy — and
           reopen any recent capture later with its annotations still editable.
         </p>
         <div class="cta">
@@ -52,9 +52,15 @@
             </svg>
             Download for Windows
           </a>
+          <a class="btn btn-glass" id="download-windows" href="https://github.com/SaGgaSsa/keepshot/releases/latest" hidden>Download for Windows</a>
           <a class="btn btn-glass" href="https://github.com/SaGgaSsa/keepshot">View on GitHub</a>
         </div>
-        <p id="download-meta" class="meta">Windows 10 / 11 · x64 · Free and MIT licensed</p>
+        <div id="linux-downloads" class="linux-downloads" hidden aria-label="Linux downloads">
+          <a class="btn btn-glass" data-linux="appimage" href="#">AppImage</a>
+          <a class="btn btn-glass" data-linux="deb" href="#">.deb</a>
+          <a class="btn btn-glass" data-linux="rpm" href="#">.rpm</a>
+        </div>
+        <p id="download-meta" class="meta">Windows 10 / 11 · Linux x64 · Free and MIT licensed</p>
         <p class="hint">
           Press <span class="combo"><kbd>PrtSc</kbd></span> to capture ·
           <span class="combo"><kbd>Ctrl</kbd>+<kbd>PrtSc</kbd></span> for history

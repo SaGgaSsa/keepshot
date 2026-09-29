@@ -129,6 +129,12 @@ pub fn update(app: &AppHandle, settings: Settings) -> Result<(), String> {
 }
 
 pub fn register_startup_shortcuts(app: &AppHandle) {
+    if !crate::platform::global_shortcuts_supported() {
+        if let Ok(mut errors) = app.state::<SettingsState>().shortcut_errors.lock() {
+            errors.clear();
+        }
+        return;
+    }
     let current = match snapshot(app) {
         Ok(settings) => settings,
         Err(error) => {
@@ -147,7 +153,16 @@ pub fn register_startup_shortcuts(app: &AppHandle) {
             manager
                 .register(parsed)
                 .map(|_| parsed)
-                .map_err(|error| registration_error(&error.to_string()))
+                .map_err(|error| {
+                    let message = registration_error(&error.to_string());
+                    #[cfg(target_os = "linux")]
+                    if message == "That shortcut is already in use by another app"
+                        && value.to_ascii_lowercase().contains("printscreen")
+                    {
+                        return format!("{message}. Your desktop may already use Print Screen for its own screenshot tool; unbind it in your keyboard settings or pick another shortcut.");
+                    }
+                    message
+                })
         });
         match result {
             Ok(parsed) if slot == "capture" => {

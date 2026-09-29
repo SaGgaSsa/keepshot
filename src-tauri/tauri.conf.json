@@ -27,9 +27,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": [
-      "nsis"
-    ],
+    "targets": ["nsis", "appimage", "deb", "rpm"],
     "publisher": "SaGgaSsa",
     "copyright": "Copyright (c) 2026 SaGgaSsa. MIT License.",
     "category": "Utility",
@@ -54,6 +52,11 @@
           "Spanish"
         ]
       }
+    },
+    "linux": {
+      "appimage": { "bundleMediaFramework": false },
+      "deb": { "depends": [] },
+      "rpm": {}
     },
     "createUpdaterArtifacts": true
   },

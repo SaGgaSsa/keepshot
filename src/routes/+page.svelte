@@ -19,6 +19,10 @@
     printScreenConflict: boolean | null;
     defaultSaveFolder: string;
     windowMaterial: "mica" | "solid";
+    platform: "windows" | "linux" | "macos";
+    globalShortcutsSupported: boolean;
+    captureCommand: string | null;
+    historyCommand: string | null;
   };
 
   let view = $state<SettingsView | null>(null);
@@ -139,6 +143,14 @@
     }
   }
 
+  async function copyCommand(command: string): Promise<void> {
+    try {
+      await invoke("copy_text", { text: command });
+    } catch (cause) {
+      reportError("copy shortcut command", cause);
+    }
+  }
+
   function message(cause: unknown): string {
     return reportError("settings", cause);
   }
@@ -217,6 +229,26 @@
 
     <section class="panel">
       <div class="section-title"><span>01</span><h2>Shortcuts</h2></div>
+      {#if !view.globalShortcutsSupported}
+        <div class="warning linux-shortcut-warning">
+          <strong>Set up shortcuts in your desktop settings</strong>
+          <p>
+            Wayland desktops register global shortcuts themselves. Add custom shortcuts in your
+            keyboard settings (GNOME: Settings › Keyboard › Custom Shortcuts; KDE: System Settings ›
+            Shortcuts › Custom Shortcuts) that run these commands:
+          </p>
+          {#each [["Capture", view.captureCommand], ["History", view.historyCommand]] as [label, command] (label)}
+            {#if command}
+              <div class="command-row">
+                <span>{label}</span>
+                <code>{command}</code>
+                <button class="secondary" onclick={() => copyCommand(command)}>Copy</button>
+              </div>
+            {/if}
+          {/each}
+          <small>The shortcut recorders below only apply on X11.</small>
+        </div>
+      {/if}
       {#each view.shortcutErrors as shortcutError (shortcutError)}
         <p class="inline-error">{shortcutError}</p>
       {/each}
@@ -267,7 +299,7 @@
       <div class="section-title"><span>03</span><h2>Startup</h2></div>
       <label class="toggle-row">
         <span>
-          <strong>Start KeepShot with Windows</strong>
+          <strong>Start KeepShot with {view.platform === "windows" ? "Windows" : view.platform === "macos" ? "macOS" : "your system"}</strong>
           <small>Keep shortcuts available after sign-in</small>
         </span>
         <input type="checkbox" checked={view.autostart} onchange={setAutostart} />
@@ -593,6 +625,26 @@
     display: flex;
     align-items: center;
     gap: 12px;
+  }
+  .linux-shortcut-warning p {
+    overflow-wrap: anywhere;
+  }
+  .command-row {
+    display: grid;
+    grid-template-columns: 54px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    margin-top: 7px;
+  }
+  .command-row code {
+    overflow-wrap: anywhere;
+    user-select: text;
+    color: var(--color-text);
+    font: 10px var(--font-mono);
+  }
+  .linux-shortcut-warning > small {
+    display: block;
+    margin-top: 8px;
   }
   .compact-warning {
     display: flex;

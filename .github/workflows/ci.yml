@@ -15,8 +15,12 @@ concurrency:
 
 jobs:
   checks:
-    name: Checks
-    runs-on: windows-latest
+    name: Checks (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [windows-latest, ubuntu-22.04]
     steps:
       - uses: actions/checkout@v4
 
@@ -33,12 +37,17 @@ jobs:
         with:
           workspaces: src-tauri
 
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libxdo-dev libxcb1-dev libxcb-randr0-dev libxrandr-dev libdbus-1-dev libpipewire-0.3-dev libspa-0.2-dev libclang-dev clang libgbm-dev libegl-dev libwayland-dev pkg-config rpm file
+
       - run: npm ci
       - run: npm run check
+        if: runner.os == 'Windows'
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+        if: runner.os == 'Windows'
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 
-  # A release is published when the version in tauri.conf.json has no matching vX.Y.Z tag yet.
   version:
     name: Detect new version
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
@@ -61,13 +70,66 @@ jobs:
             echo "release=true" >> "$GITHUB_OUTPUT"
           fi
 
-  release:
-    name: Release v${{ needs.version.outputs.version }}
+  create-release:
+    name: Prepare release v${{ needs.version.outputs.version }}
     needs: [checks, version]
     if: needs.version.outputs.release == 'true'
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      release_id: ${{ steps.create.outputs.release_id }}
+    steps:
+      - uses: actions/checkout@v4
+      # The tag only exists once the draft is published, so the version job keeps detecting
+      # this version as new until the release goes out. A draft left by a failed run is reused.
+      - id: create
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+          REPOSITORY: ${{ github.repository }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          notes=".github/release-notes/v${VERSION}.md"
+          if [ ! -f "$notes" ]; then
+            notes="$RUNNER_TEMP/notes.md"
+            echo "See the commit history for changes in this release." > "$notes"
+          fi
+          # The releases/tags/{tag} endpoint does not return drafts, so search the list instead.
+          find_draft() {
+            gh api --paginate "repos/${REPOSITORY}/releases" \
+              --jq ".[] | select(.draft and .tag_name == \"v${VERSION}\") | .id" | head -n 1
+          }
+          release_id=$(find_draft)
+          if [ -n "$release_id" ]; then
+            gh api -X PATCH "repos/${REPOSITORY}/releases/${release_id}" \
+              -f target_commitish="${TARGET_SHA}" -F body=@"$notes" > /dev/null
+          else
+            gh release create "v${VERSION}" --draft --target "${TARGET_SHA}" \
+              --title "KeepShot v${VERSION}" --notes-file "$notes"
+            release_id=$(find_draft)
+          fi
+          if [ -z "$release_id" ]; then
+            echo "Could not find the draft release for v${VERSION}" >&2
+            exit 1
+          fi
+          echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build (${{ matrix.os }})
+    needs: [version, create-release]
+    if: needs.version.outputs.release == 'true'
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: windows-latest
+            bundles: nsis
+          - os: ubuntu-22.04
+            bundles: appimage,deb,rpm
     steps:
       - uses: actions/checkout@v4
 
@@ -77,45 +139,39 @@ jobs:
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
-
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
 
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libxdo-dev libxcb1-dev libxcb-randr0-dev libxrandr-dev libdbus-1-dev libpipewire-0.3-dev libspa-0.2-dev libclang-dev clang libgbm-dev libegl-dev libwayland-dev pkg-config rpm file
+
       - run: npm ci
 
-      - id: notes
-        shell: bash
-        run: |
-          notes=".github/release-notes/v${{ needs.version.outputs.version }}.md"
-          if [ ! -f "$notes" ]; then
-            notes="$RUNNER_TEMP/notes.md"
-            echo "See the commit history for changes in this release." > "$notes"
-          fi
-          echo "file=$notes" >> "$GITHUB_OUTPUT"
-
-      - id: body
-        shell: bash
-        run: |
-          {
-            echo "text<<KEEPSHOT_NOTES_EOF"
-            cat "${{ steps.notes.outputs.file }}"
-            echo
-            echo "KEEPSHOT_NOTES_EOF"
-          } >> "$GITHUB_OUTPUT"
-
-      # Builds the signed NSIS installer, creates the vX.Y.Z tag and release on this commit,
-      # and uploads the installer, its .sig and latest.json for the in-app updater.
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: v__VERSION__
-          releaseName: KeepShot v__VERSION__
-          releaseBody: ${{ steps.body.outputs.text }}
-          releaseDraft: false
-          prerelease: false
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+          args: --bundles ${{ matrix.bundles }}
           includeUpdaterJson: true
           updaterJsonPreferNsis: true
+
+  publish-release:
+    name: Publish release v${{ needs.version.outputs.version }}
+    needs: [create-release, build, version]
+    if: needs.version.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+        run: |
+          gh api -X PATCH "repos/${REPOSITORY}/releases/${RELEASE_ID}" \
+            -F draft=false -f make_latest=true > /dev/null

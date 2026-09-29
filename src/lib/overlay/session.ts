@@ -1,5 +1,6 @@
 import type { BaseFrame } from "$lib/annotations/render";
 import type { MonitorGeometry, PhysicalRect, VirtualBounds } from "./geometry";
+import { customProtocolUrl } from "$lib/protocol";
 
 export type HistoryEditSession = {
   historyId: string;
@@ -35,7 +36,7 @@ export function frameUrl(
   endRow: number,
 ): string {
   const query = `s=${encodeURIComponent(sessionId)}&y0=${startRow}&y1=${endRow}`;
-  return `http://frame.localhost/${encodeURIComponent(monitor.label)}?${query}`;
+  return customProtocolUrl("frame", `${encodeURIComponent(monitor.label)}?${query}`);
 }
 
 export async function loadFrames(

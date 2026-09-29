@@ -6,11 +6,30 @@ A lightweight, open source screenshot tool — a modern replacement for Lightsho
 - **Re-editable annotations**: reopen any capture from history and keep editing its layers.
 - **Solid multi-monitor support**, including mixed DPI scaling and negative coordinates.
 
-Windows first; Linux planned. Built with [Tauri 2](https://tauri.app), Rust, Svelte and TypeScript.
+Windows and Linux. Built with [Tauri 2](https://tauri.app), Rust, Svelte and TypeScript.
 
-**[Download for Windows](https://saggassa.github.io/keepshot/)** · [Releases](https://github.com/SaGgaSsa/keepshot/releases)
+**[Download for Windows and Linux](https://saggassa.github.io/keepshot/)** · [Releases](https://github.com/SaGgaSsa/keepshot/releases)
 
 > Status: early development.
+
+## Installation
+
+Download KeepShot from the [release page](https://github.com/SaGgaSsa/keepshot/releases/latest).
+
+### Windows
+
+Run the NSIS installer. On Windows 11, Print Screen opens Snipping Tool by default; turn this off in Settings > Accessibility > Keyboard to use it for KeepShot.
+
+### Linux
+
+Choose the x86_64 AppImage, `.deb`, or `.rpm` package. To run the AppImage:
+
+```sh
+chmod +x KeepShot_*.AppImage
+./KeepShot_*.AppImage
+```
+
+For a system tray icon on GNOME, install and enable an AppIndicator extension. On Wayland, configure capture and history shortcuts in the desktop keyboard settings using the commands shown in KeepShot Settings (`--capture` and `--history`). The first screen capture in GNOME Wayland may ask for permission through the screen capture portal.
 
 ## Development
 

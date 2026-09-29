@@ -99,7 +99,7 @@ pub fn list(root: &Path) -> Result<Vec<HistoryItem>, String> {
             _ => continue,
         };
         items.push(HistoryItem {
-            thumb_url: format!("http://history.localhost/{id}/thumb.png"),
+            thumb_url: crate::platform::protocol_url("history", &format!("{id}/thumb.png")),
             meta,
         });
     }

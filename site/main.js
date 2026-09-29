@@ -13,11 +13,39 @@ async function loadReleases() {
 
 function showDownload(release) {
   const installer = release.assets.find((a) => a.name.endsWith('_x64-setup.exe'));
-  if (!installer) return;
-  document.getElementById('download').href = installer.browser_download_url;
-  const mb = (installer.size / 1024 / 1024).toFixed(1);
-  document.getElementById('download-meta').textContent =
-    `Version ${release.tag_name.replace(/^v/, '')} · ${mb} MB · Windows 10 / 11 x64 · MIT licensed`;
+  const linuxAssets = {
+    appimage: release.assets.find((a) => a.name.endsWith('_amd64.AppImage')),
+    deb: release.assets.find((a) => a.name.endsWith('_amd64.deb')),
+    rpm: release.assets.find((a) => a.name.endsWith('.x86_64.rpm')),
+  };
+  const linux = navigator.userAgent.includes('Linux') && !navigator.userAgent.includes('Android');
+  const button = document.getElementById('download');
+  const windowsButton = document.getElementById('download-windows');
+  const linuxDownloads = document.getElementById('linux-downloads');
+  for (const [format, asset] of Object.entries(linuxAssets)) {
+    const link = linuxDownloads.querySelector(`[data-linux="${format}"]`);
+    if (asset) link.href = asset.browser_download_url;
+    else link.remove();
+  }
+  linuxDownloads.hidden = !Object.values(linuxAssets).some(Boolean);
+  if (linux) {
+    button.hidden = !linuxAssets.appimage;
+    windowsButton.hidden = !installer;
+  }
+  if (installer) {
+    windowsButton.href = installer.browser_download_url;
+    if (!linux) {
+      button.href = installer.browser_download_url;
+      const mb = (installer.size / 1024 / 1024).toFixed(1);
+      document.getElementById('download-meta').textContent = `Version ${release.tag_name.replace(/^v/, '')} · ${mb} MB · Windows 10 / 11 x64 · MIT licensed`;
+    }
+  }
+  if (linux && linuxAssets.appimage) {
+    button.href = linuxAssets.appimage.browser_download_url;
+    button.textContent = 'Download AppImage';
+    windowsButton.hidden = !installer;
+    document.getElementById('download-meta').textContent = `Version ${release.tag_name.replace(/^v/, '')} · Linux x64 · Free and MIT licensed`;
+  }
 }
 
 function showReleases(releases) {

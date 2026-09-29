@@ -154,6 +154,18 @@ footer {
   margin-top: 36px;
 }
 
+.linux-downloads {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+[hidden] {
+  display: none !important;
+}
+
 .btn {
   display: inline-flex;
   align-items: center;

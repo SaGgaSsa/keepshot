@@ -4,6 +4,10 @@
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 
+  if (navigator.userAgent.includes("Linux")) {
+    document.documentElement.dataset.material = "solid";
+  }
+
   type HistoryItem = {
     id: string;
     createdAt: string;
@@ -244,6 +248,10 @@
     overflow: hidden;
     background: transparent;
   }
+  :global(html[data-material="solid"]),
+  :global(html[data-material="solid"] body) {
+    background: var(--color-surface);
+  }
 
   /* The panel itself has no background: only the title and the capture cards float over the desktop. */
   .panel {
@@ -254,6 +262,10 @@
     padding: 8px 10px;
     color: var(--color-text);
     outline: none;
+  }
+  :global(html[data-material="solid"]) .panel {
+    border-radius: 10px;
+    background: var(--color-surface);
   }
 
   header {

@@ -1,5 +1,65 @@
+#[cfg(target_os = "linux")]
+mod linux;
 #[cfg(windows)]
 mod windows;
+
+pub fn prepare_environment() {
+    #[cfg(target_os = "linux")]
+    linux::prepare_environment();
+}
+
+pub fn global_shortcuts_supported() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        !linux::is_wayland()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
+}
+
+pub fn name() -> &'static str {
+    #[cfg(windows)]
+    {
+        "windows"
+    }
+    #[cfg(target_os = "linux")]
+    {
+        "linux"
+    }
+    #[cfg(target_os = "macos")]
+    {
+        "macos"
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+    {
+        "windows"
+    }
+}
+
+pub fn launch_command(arg: &str) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::launch_command(arg)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = arg;
+        None
+    }
+}
+
+pub fn protocol_url(scheme: &str, path: &str) -> String {
+    #[cfg(windows)]
+    {
+        format!("http://{scheme}.localhost/{path}")
+    }
+    #[cfg(not(windows))]
+    {
+        format!("{scheme}://localhost/{path}")
+    }
+}
 
 pub fn supports_mica() -> bool {
     #[cfg(windows)]

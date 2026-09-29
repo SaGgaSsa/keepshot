@@ -2,7 +2,7 @@
 
 Herramienta de capturas de pantalla open source, moderna y liviana, pensada como reemplazo de Lightshot. Diferencial: **historial local** de capturas (sin nube) con **anotaciones re-editables**, y una estética cuidada al estilo CleanShot X.
 
-Plataformas: **Windows primero (MVP)**, Linux en la etapa 2. macOS no es objetivo (no hay equipo para probar), pero no hay que cerrarle la puerta.
+Plataformas: **Windows y Linux x86_64 (X11 y Wayland)**. macOS no es objetivo (no hay equipo para probar), pero no hay que cerrarle la puerta.
 
 ## Alcance del MVP
 
@@ -53,7 +53,7 @@ Grabación de video/GIF, OCR, subida a la nube, scroll capture, historial de por
 - **DPI**: la app debe ser Per-Monitor DPI Aware v2. Trabajar internamente en píxeles físicos y convertir a lógicos solo para la UI. Probar siempre con monitores de escalados distintos (100% + 150%).
 - **Selección entre monitores**: decidido — la selección puede cruzar monitores (una sola ventana). Por ahora solo se soporta escala 100%; escalas mixtas quedan pendientes (la conversión CSS↔físico está centralizada en `src/lib/overlay/geometry.ts`).
 - **Transferencia de imágenes al webview**: no usar base64 para capturas grandes; servirlas por protocolo custom de Tauri o asset protocol.
-- **Linux (etapa 2)**: en Wayland la captura pasa por xdg-desktop-portal y los atajos globales están restringidos. No acoplar el core a APIs exclusivas de Windows: aislar captura, hotkeys y efectos de ventana detrás de módulos por plataforma.
+- **Linux**: la UI usa XWayland en sesiones Wayland para conservar la ventana overlay global; `xcap` captura por portal en Wayland, los atajos se lanzan con `--capture`/`--history` desde la configuración del escritorio y los protocolos custom usan `scheme://localhost`.
 
 ## Dirección visual
 

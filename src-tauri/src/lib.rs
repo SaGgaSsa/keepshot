@@ -21,13 +21,22 @@ use updates::{check_for_updates, get_update_status, install_update};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    platform::prepare_environment();
     tauri::Builder::default()
         .manage(frames::FrameStore::default())
         .manage(overlay::OverlayRegistry::default())
         .manage(settings::SettingsState::default())
         .manage(updates::UpdateState::default())
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            tray::show_settings(app);
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if args.iter().any(|argument| argument == "--capture") {
+                start_capture(app.clone());
+            } else if args.iter().any(|argument| argument == "--history") {
+                if let Err(error) = overlay::toggle_history(app) {
+                    crate::log_error!("Could not toggle history panel: {error}");
+                }
+            } else {
+                tray::show_settings(app);
+            }
         }))
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_store::Builder::default().build())
@@ -120,6 +129,7 @@ pub fn run() {
         )
         .invoke_handler(tauri::generate_handler![
             log_client_error,
+            copy_text,
             overlay_ready,
             pending_frame,
             close_overlays,
@@ -192,14 +202,17 @@ pub fn run() {
                     }
                 });
             }
-            let autostart = std::env::args().any(|argument| argument == "--autostart");
+            let args = std::env::args().collect::<Vec<_>>();
+            let autostart = args.iter().any(|argument| argument == "--autostart");
+            let startup_capture = args.iter().any(|argument| argument == "--capture");
+            let startup_history = args.iter().any(|argument| argument == "--history");
             let state = app.state::<settings::SettingsState>();
             let onboarding_done = state
                 .values
                 .lock()
                 .map(|value| value.onboarding_done)
                 .unwrap_or(true);
-            if !autostart && !onboarding_done {
+            if !autostart && !startup_capture && !startup_history && !onboarding_done {
                 tray::show_settings(app.handle());
             }
             match app.path().app_local_data_dir() {
@@ -220,6 +233,13 @@ pub fn run() {
                 Ok(()) => {}
                 Err(error) => crate::log_error!("Failed to initialize capture overlays: {error}"),
             }
+            if startup_capture {
+                start_capture(app.handle().clone());
+            } else if startup_history {
+                if let Err(error) = overlay::toggle_history(app.handle()) {
+                    crate::log_error!("Could not toggle history panel: {error}");
+                }
+            }
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -230,6 +250,14 @@ pub fn run() {
 #[tauri::command]
 fn log_client_error(source: String, message: String) {
     log_error!("[{source}] {message}");
+}
+
+/// Copies plain text for the Settings page; `navigator.clipboard` is unreliable in WebKitGTK.
+#[tauri::command]
+fn copy_text(app: tauri::AppHandle, text: String) -> Result<(), String> {
+    app.clipboard()
+        .write_text(text)
+        .map_err(|error| format!("Could not copy text: {error}"))
 }
 
 #[tauri::command]
@@ -437,6 +465,10 @@ struct SettingsView {
     print_screen_conflict: Option<bool>,
     default_save_folder: String,
     window_material: String,
+    platform: &'static str,
+    global_shortcuts_supported: bool,
+    capture_command: Option<String>,
+    history_command: Option<String>,
 }
 
 #[tauri::command]
@@ -461,11 +493,15 @@ fn settings_ready(app: tauri::AppHandle, state: tauri::State<'_, settings::Setti
 fn get_settings_view(app: tauri::AppHandle) -> Result<SettingsView, String> {
     let current = settings::snapshot(&app)?;
     let state = app.state::<settings::SettingsState>();
-    let shortcut_errors = state
+    let mut shortcut_errors = state
         .shortcut_errors
         .lock()
         .map_err(|_| "Shortcut status is unavailable".to_string())?
         .clone();
+    let global_shortcuts_supported = platform::global_shortcuts_supported();
+    if !global_shortcuts_supported {
+        shortcut_errors.clear();
+    }
     let window_material = state
         .window_material
         .lock()
@@ -491,6 +527,10 @@ fn get_settings_view(app: tauri::AppHandle) -> Result<SettingsView, String> {
         print_screen_conflict,
         default_save_folder: default_save_folder(&app)?.display().to_string(),
         window_material,
+        platform: platform::name(),
+        global_shortcuts_supported,
+        capture_command: platform::launch_command("--capture"),
+        history_command: platform::launch_command("--history"),
     })
 }
 
@@ -522,12 +562,13 @@ fn set_shortcut(
         .lock()
         .map_err(|_| "Shortcut status is unavailable".to_string())?
         .to_owned();
-    if !is_suspended {
+    let register_shortcut = !is_suspended && platform::global_shortcuts_supported();
+    if register_shortcut {
         if let Ok(old) = settings::shortcut(&old_value) {
             let _ = manager.unregister(old);
         }
     }
-    if !is_suspended {
+    if register_shortcut {
         if let Err(error) = manager.register(parsed) {
             if let Ok(old) = settings::shortcut(&old_value) {
                 if let Err(restore_error) = manager.register(old) {
@@ -546,7 +587,7 @@ fn set_shortcut(
         current.history_shortcut = value;
     }
     if let Err(error) = settings::update(&app, current.clone()) {
-        if !is_suspended {
+        if register_shortcut {
             let _ = manager.unregister(parsed);
             if let Ok(old) = settings::shortcut(&old_value) {
                 let _ = manager.register(old);
@@ -560,7 +601,11 @@ fn set_shortcut(
     } else {
         &current.history_shortcut
     })?;
-    set_shortcut_slot(&app.state::<settings::SettingsState>(), slot, Some(updated));
+    set_shortcut_slot(
+        &app.state::<settings::SettingsState>(),
+        slot,
+        platform::global_shortcuts_supported().then_some(updated),
+    );
     if let Ok(mut errors) = app
         .state::<settings::SettingsState>()
         .shortcut_errors
@@ -602,7 +647,9 @@ fn set_shortcuts_suspended(app: &tauri::AppHandle, suspend: bool) -> Result<(), 
     let current = settings::snapshot(app)?;
     let manager = app.global_shortcut();
     let values = [current.capture_shortcut, current.history_shortcut];
-    if suspend {
+    if !platform::global_shortcuts_supported() {
+        *suspended = suspend;
+    } else if suspend {
         for value in values {
             if let Ok(shortcut) = settings::shortcut(&value) {
                 let _ = manager.unregister(shortcut);
@@ -696,11 +743,12 @@ fn complete_onboarding(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 fn default_save_folder(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    Ok(app
+    let picture_dir = app
         .path()
         .picture_dir()
-        .map_err(|error| format!("Could not find the Pictures folder: {error}"))?
-        .join("KeepShot"))
+        .or_else(|_| app.path().home_dir().map(|home| home.join("Pictures")))
+        .map_err(|error| format!("Could not find the Pictures folder: {error}"))?;
+    Ok(picture_dir.join("KeepShot"))
 }
 
 fn save_folder(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {

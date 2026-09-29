@@ -2,73 +2,49 @@
 
 ## Automated release (default)
 
-Every push to `main` runs the CI workflow (`.github/workflows/ci.yml`): Svelte/TypeScript checks,
-`cargo fmt` and `cargo clippy`. If the version in `src-tauri/tauri.conf.json` has no matching
-`vX.Y.Z` tag yet, CI also builds the signed NSIS installer with `tauri-apps/tauri-action`, creates
-the tag and GitHub release on that commit, and uploads the installer, its `.sig` and `latest.json`.
+Every push to `main` runs Windows and Linux checks. When the version in `src-tauri/tauri.conf.json` has no matching `vX.Y.Z` tag, CI prepares a draft release, builds both platforms, uploads the artifacts, and publishes it only after every build succeeds. The same GitHub release contains the Windows NSIS installer and Linux AppImage, `.deb`, and `.rpm` packages, along with updater signatures and the merged `latest.json` manifest.
 
 To ship a new version:
 
 1. Bump the version in `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and `package.json`.
 2. Write release notes in `.github/release-notes/vX.Y.Z.md` (optional; a generic note is used otherwise).
-3. Merge to `main` and push. CI publishes the release; pushes without a version bump only run checks.
+3. Merge to `main` and push.
 
-The workflow needs two repository secrets (Settings › Secrets and variables › Actions):
+The workflow needs two repository secrets (Settings > Secrets and variables > Actions):
 
 - `TAURI_SIGNING_PRIVATE_KEY`: the full contents of `keepshot-updater.key`.
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: the contents of `keepshot-updater.password`.
 
-The manual steps below remain as a fallback when CI is unavailable.
+Keep both files outside the repository (`%USERPROFILE%\.tauri\` on the release machine) and never
+commit them. The matching public key in `src-tauri/tauri.conf.json` is safe to distribute. The same
+key signs the Windows and Linux updater artifacts.
 
-## Signing prerequisites
+The Linux updater selects `linux-x86_64-appimage`, `linux-x86_64-deb`, or `linux-x86_64-rpm` based on the installed package. Updating `.deb` and `.rpm` installations asks for the user's password through `pkexec`; AppImage updates replace the AppImage in place.
 
-Keep the updater signing private key and its password outside the repository:
+## Local Linux build
 
-- `%USERPROFILE%\.tauri\keepshot-updater.key`
-- `%USERPROFILE%\.tauri\keepshot-updater.password`
+On Ubuntu 22.04, install the CI build dependencies and compile all Linux formats:
 
-Never commit either file or their contents. The matching public key is configured in
-`src-tauri/tauri.conf.json` and is safe to distribute with the application.
+```sh
+sudo apt-get update
+sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libxdo-dev libxcb1-dev libxcb-randr0-dev libxrandr-dev libdbus-1-dev libpipewire-0.3-dev libspa-0.2-dev libclang-dev clang libgbm-dev libegl-dev libwayland-dev pkg-config rpm file
+npm ci
+npm run tauri build -- --bundles appimage,deb,rpm
+```
 
-## Build a signed Windows release
+## Signed Windows build
 
-From the repository root in PowerShell, load the signing credentials and build the NSIS installer:
+From the repository root in PowerShell:
 
 ```powershell
 $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content -Raw "$env:USERPROFILE\.tauri\keepshot-updater.key"
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = Get-Content -Raw "$env:USERPROFILE\.tauri\keepshot-updater.password"
-npm run tauri build
+npm run tauri build -- --bundles nsis
 npm run release:latest-json -- notes.md
 ```
 
-The manifest generator reads the version from `src-tauri/tauri.conf.json`, the signature from
-`src-tauri/target/release/bundle/nsis/KeepShot_<version>_x64-setup.exe.sig`, and release notes from
-the optional file argument. It writes `src-tauri/target/release/bundle/latest.json` and checks that
-the installer and signature exist first.
-
-## Publish the release
-
-Update the version consistently in `src-tauri/Cargo.toml`, `package.json`, and
-`src-tauri/tauri.conf.json`. Build the signed installer and manifest, then publish a versioned
-GitHub release with all three assets:
-
-```powershell
-gh release create vX.Y.Z `
-  "src-tauri/target/release/bundle/nsis/KeepShot_X.Y.Z_x64-setup.exe" `
-  "src-tauri/target/release/bundle/nsis/KeepShot_X.Y.Z_x64-setup.exe.sig" `
-  "src-tauri/target/release/bundle/latest.json" `
-  --title "KeepShot X.Y.Z" `
-  --notes-file notes.md
-```
-
-The configured updater endpoint downloads `latest.json` from the latest GitHub release. Keep the
-manifest's installer URL versioned to match the release tag and attached installer.
+The manual manifest generator remains a Windows fallback. CI creates and publishes releases automatically.
 
 ## End-to-end update check
 
-Publish a signed release with a version greater than the installed build. Install the older signed
-build, launch KeepShot, and use **Settings → Updates → Check for updates** or the tray update item.
-Confirm the available version and release notes, start **Install and restart**, and verify that the
-new version starts. Also check an installation already on the latest version and confirm it reports
-that it is up to date. For local development, the manual check command works in debug builds; the
-automatic six-hour check runs only in release builds.
+Publish a signed release with a version greater than the installed build. Check for updates from Settings or the tray, install and restart, then verify the new version starts. For `.deb` and `.rpm`, confirm the system requests authorization through `pkexec`.
