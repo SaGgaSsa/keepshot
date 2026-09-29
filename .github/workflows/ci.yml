@@ -105,9 +105,10 @@ jobs:
             gh api -X PATCH "repos/${REPOSITORY}/releases/${release_id}" \
               -f target_commitish="${TARGET_SHA}" -F body=@"$notes" > /dev/null
           else
-            gh release create "v${VERSION}" --draft --target "${TARGET_SHA}" \
-              --title "KeepShot v${VERSION}" --notes-file "$notes"
-            release_id=$(find_draft)
+            # Take the id from the response: a new draft can take a while to show up in listings.
+            release_id=$(gh api -X POST "repos/${REPOSITORY}/releases" \
+              -f tag_name="v${VERSION}" -f target_commitish="${TARGET_SHA}" \
+              -f name="KeepShot v${VERSION}" -F body=@"$notes" -F draft=true --jq .id)
           fi
           if [ -z "$release_id" ]; then
             echo "Could not find the draft release for v${VERSION}" >&2
