@@ -1,6 +1,6 @@
 {
   "name": "keepshot",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "Lightweight screenshot tool with local history and re-editable annotations",
   "type": "module",
