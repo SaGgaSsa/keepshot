@@ -22,7 +22,7 @@ Run the NSIS installer. On Windows 11, Print Screen opens Snipping Tool by defau
 
 ### Linux
 
-Choose the x86_64 AppImage, `.deb`, or `.rpm` package. To run the AppImage:
+Choose the x86_64 AppImage, `.deb`, or `.rpm` package. KeepShot needs a recent distribution with PipeWire 1.0+ (for example Ubuntu 24.04, Debian 13, Fedora 40 or newer). To run the AppImage:
 
 ```sh
 chmod +x KeepShot_*.AppImage

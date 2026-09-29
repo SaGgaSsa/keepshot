@@ -23,7 +23,7 @@ The Linux updater selects `linux-x86_64-appimage`, `linux-x86_64-deb`, or `linux
 
 ## Local Linux build
 
-On Ubuntu 22.04, install the CI build dependencies and compile all Linux formats:
+On Ubuntu 24.04 (or newer; xcap needs PipeWire 1.0+), install the CI build dependencies and compile all Linux formats:
 
 ```sh
 sudo apt-get update
