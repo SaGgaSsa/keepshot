@@ -95,10 +95,11 @@ jobs:
             notes="$RUNNER_TEMP/notes.md"
             echo "See the commit history for changes in this release." > "$notes"
           fi
-          # The releases/tags/{tag} endpoint does not return drafts, so search the list instead.
+          # Drafts are not returned by releases/tags/{tag} and can report an "untagged-*"
+          # tag_name, so match them by name.
           find_draft() {
             gh api --paginate "repos/${REPOSITORY}/releases" \
-              --jq ".[] | select(.draft and .tag_name == \"v${VERSION}\") | .id" | head -n 1
+              --jq ".[] | select(.draft and .name == \"KeepShot v${VERSION}\") | .id" | head -n 1
           }
           release_id=$(find_draft)
           if [ -n "$release_id" ]; then
@@ -173,6 +174,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPOSITORY: ${{ github.repository }}
           RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+          VERSION: ${{ needs.version.outputs.version }}
+          TARGET_SHA: ${{ github.sha }}
+        # Set the tag explicitly: publishing a draft can otherwise keep its "untagged-*" name.
         run: |
           gh api -X PATCH "repos/${REPOSITORY}/releases/${RELEASE_ID}" \
+            -f tag_name="v${VERSION}" -f target_commitish="${TARGET_SHA}" \
             -F draft=false -f make_latest=true > /dev/null
