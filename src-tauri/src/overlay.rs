@@ -104,6 +104,22 @@ pub fn focus(window: &WebviewWindow) -> Result<(), String> {
     Ok(())
 }
 
+/// Linux window managers (GNOME/Mutter included) clamp normal windows to the work area, which
+/// shifts the overlay past the top bar and dock. A fullscreen window spanning every monitor is
+/// exempt from that and stacks above the panels. Must run on the main (GTK) thread.
+#[cfg(target_os = "linux")]
+pub fn cover_all_monitors(window: &WebviewWindow) -> Result<(), String> {
+    use gtk::prelude::*;
+    let gtk_window = window.gtk_window().map_err(|error| error.to_string())?;
+    gtk_window.realize();
+    let gdk_window = gtk_window
+        .window()
+        .ok_or_else(|| "Capture overlay has no GDK window".to_string())?;
+    gdk_window.set_fullscreen_mode(gtk::gdk::FullscreenMode::AllMonitors);
+    gtk_window.fullscreen();
+    Ok(())
+}
+
 pub fn hide_history(app: &AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("history") {
         window.hide().map_err(|error| error.to_string())?;

@@ -276,6 +276,10 @@ fn overlay_ready(
     let window = app
         .get_webview_window("overlay")
         .ok_or_else(|| "Capture overlay no longer exists".to_string())?;
+    #[cfg(target_os = "linux")]
+    if let Err(error) = overlay::cover_all_monitors(&window) {
+        crate::log_error!("Could not make capture overlay fullscreen: {error}");
+    }
     window
         .show()
         .map_err(|error| format!("Could not show capture overlay: {error}"))?;
