@@ -76,8 +76,10 @@ pub fn update_menu(app: &AppHandle) -> Result<(), String> {
 
 pub fn show_settings(app: &AppHandle) {
     let state = app.state::<settings::SettingsState>();
+    // Waiting for the first paint only avoids WebView2's white flash. WebKitGTK never fires
+    // requestAnimationFrame in a hidden window, so on Linux the page would never report ready.
     if let Ok(ready) = state.page_ready.lock() {
-        if !*ready {
+        if cfg!(windows) && !*ready {
             // The page calls `settings_ready` after its first paint and the window is shown then.
             if let Ok(mut pending) = state.show_pending.lock() {
                 *pending = true;

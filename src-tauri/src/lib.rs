@@ -286,7 +286,7 @@ fn overlay_ready(
         return Ok(());
     }
     let shown_ms = state.elapsed_ms()?;
-    if let Err(error) = window.set_focus() {
+    if let Err(error) = overlay::focus(&window) {
         crate::log_error!("Could not focus capture overlay: {error}");
     }
     let Some(metrics) = state.mark_ready(&session, timings, shown_ms)? else {

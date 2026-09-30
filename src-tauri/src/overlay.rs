@@ -84,12 +84,23 @@ pub fn toggle_history(app: &AppHandle) -> Result<(), String> {
     }
     position_history(&window, app)?;
     window.show().map_err(|error| error.to_string())?;
-    if let Err(error) = window.set_focus() {
+    if let Err(error) = focus(&window) {
         crate::log_error!("Could not focus history panel: {error}");
     }
     if let Err(error) = window.emit("history:shown", ()) {
         crate::log_error!("Could not notify history panel that it was shown: {error}");
     }
+    Ok(())
+}
+
+/// Focuses a window created with `focused(false)`. On Linux that flag also keeps the webview from
+/// taking GTK keyboard focus, so keys (Escape included) never reach the page unless it is focused too.
+pub fn focus(window: &WebviewWindow) -> Result<(), String> {
+    window.set_focus().map_err(|error| error.to_string())?;
+    #[cfg(target_os = "linux")]
+    AsRef::<tauri::Webview>::as_ref(window)
+        .set_focus()
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
