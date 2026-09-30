@@ -2,13 +2,21 @@
 
 ## Automated release (default)
 
-Every push to `main` runs Windows and Linux checks. When the version in `src-tauri/tauri.conf.json` has no matching `vX.Y.Z` tag, CI prepares a draft release, builds both platforms, uploads the artifacts, and publishes it only after every build succeeds. The same GitHub release contains the Windows NSIS installer and Linux AppImage, `.deb`, and `.rpm` packages, along with updater signatures and the merged `latest.json` manifest.
+Every push to `main` runs Windows and Linux checks. Pushing a `vX.Y.Z` tag runs the same checks and releases that version: CI verifies the tag matches the version in `src-tauri/tauri.conf.json`, prepares a draft release, builds both platforms, uploads the artifacts, and publishes it only after every build succeeds. The same GitHub release contains the Windows NSIS installer and Linux AppImage, `.deb`, and `.rpm` packages, along with updater signatures and the merged `latest.json` manifest.
 
 To ship a new version:
 
 1. Bump the version in `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and `package.json`.
 2. Write release notes in `.github/release-notes/vX.Y.Z.md` (optional; a generic note is used otherwise).
-3. Merge to `main` and push.
+3. Commit, merge to `main` and push.
+4. Tag the release commit and push the tag:
+
+   ```sh
+   git tag -a vX.Y.Z -m "vX.Y.Z"
+   git push origin vX.Y.Z
+   ```
+
+To retry a failed release, re-run the workflow for the tag (or run it manually with `--ref vX.Y.Z`); the existing draft is reused.
 
 The workflow needs two repository secrets (Settings > Secrets and variables > Actions):
 

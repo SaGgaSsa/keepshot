@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -48,32 +49,31 @@ jobs:
         if: runner.os == 'Windows'
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 
+  # Pushing a vX.Y.Z tag publishes a release. The tag must match the app version.
   version:
-    name: Detect new version
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    name: Read release version
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.detect.outputs.version }}
-      release: ${{ steps.detect.outputs.release }}
     steps:
       - uses: actions/checkout@v4
       - id: detect
         shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
-          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          if git ls-remote --exit-code --tags origin "refs/tags/v$version" > /dev/null; then
-            echo "v$version is already released"
-            echo "release=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "v$version is new: a release will be published"
-            echo "release=true" >> "$GITHUB_OUTPUT"
+          version="${TAG#v}"
+          app_version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          if [ "$version" != "$app_version" ]; then
+            echo "Tag $TAG does not match the app version $app_version in tauri.conf.json" >&2
+            exit 1
           fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
   create-release:
     name: Prepare release v${{ needs.version.outputs.version }}
     needs: [checks, version]
-    if: needs.version.outputs.release == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -81,8 +81,7 @@ jobs:
       release_id: ${{ steps.create.outputs.release_id }}
     steps:
       - uses: actions/checkout@v4
-      # The tag only exists once the draft is published, so the version job keeps detecting
-      # this version as new until the release goes out. A draft left by a failed run is reused.
+      # A draft left by a failed run for the same tag is reused.
       - id: create
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -120,7 +119,6 @@ jobs:
   build:
     name: Build (${{ matrix.os }})
     needs: [version, create-release]
-    if: needs.version.outputs.release == 'true'
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
@@ -165,7 +163,6 @@ jobs:
   publish-release:
     name: Publish release v${{ needs.version.outputs.version }}
     needs: [create-release, build, version]
-    if: needs.version.outputs.release == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
