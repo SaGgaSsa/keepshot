@@ -36,6 +36,7 @@ tauri-plugin-updater = "2.13.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
+gdkx11 = "0.18"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

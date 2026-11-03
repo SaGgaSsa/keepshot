@@ -2392,6 +2392,7 @@ name = "keepshot"
 version = "0.1.5"
 dependencies = [
  "chrono",
+ "gdkx11",
  "gtk",
  "image",
  "serde",

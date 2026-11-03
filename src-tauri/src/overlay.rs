@@ -106,9 +106,41 @@ pub fn toggle_history(app: &AppHandle) -> Result<(), String> {
 pub fn focus(window: &WebviewWindow) -> Result<(), String> {
     window.set_focus().map_err(|error| error.to_string())?;
     #[cfg(target_os = "linux")]
-    AsRef::<tauri::Webview>::as_ref(window)
-        .set_focus()
-        .map_err(|error| error.to_string())?;
+    {
+        let target = window.clone();
+        window
+            .run_on_main_thread(move || {
+                if let Err(error) = activate_with_server_time(&target) {
+                    crate::log_error!("Could not activate window: {error}");
+                }
+                if let Err(error) = AsRef::<tauri::Webview>::as_ref(&target).set_focus() {
+                    crate::log_error!("Could not focus webview: {error}");
+                }
+            })
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+/// Captures started from a desktop shortcut arrive through `--capture` from another process, so
+/// the window has no recent user timestamp and focus-stealing prevention (Mutter included) shows
+/// it without keyboard focus until it is clicked. Presenting it with the current X server time
+/// marks the activation as fresh. Must run on the main (GTK) thread.
+#[cfg(target_os = "linux")]
+fn activate_with_server_time(window: &WebviewWindow) -> Result<(), String> {
+    use gtk::prelude::*;
+    let gtk_window = window.gtk_window().map_err(|error| error.to_string())?;
+    let Some(gdk_window) = gtk_window.window() else {
+        return Err("Window has no GDK window".to_string());
+    };
+    match gdk_window.clone().downcast::<gdkx11::X11Window>() {
+        Ok(x11_window) => {
+            let timestamp = gdkx11::functions::x11_get_server_time(&x11_window);
+            gtk_window.present_with_time(timestamp);
+            gdk_window.focus(timestamp);
+        }
+        Err(_) => gtk_window.present(),
+    }
     Ok(())
 }
 
