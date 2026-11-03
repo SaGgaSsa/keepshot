@@ -24,11 +24,19 @@ pub fn reconcile(
         .topology
         .lock()
         .map_err(|_| "Overlay registry is unavailable".to_string())?;
-    if app.get_webview_window("overlay").is_some()
-        && known.as_ref().is_some_and(|(previous, previous_bounds)| {
-            *previous_bounds == bounds && same_topology(previous, monitors)
-        })
-    {
+    let unchanged = known.as_ref().is_some_and(|(previous, previous_bounds)| {
+        *previous_bounds == bounds && same_topology(previous, monitors)
+    });
+    if let Some(window) = app.get_webview_window("overlay").filter(|_| unchanged) {
+        if !geometry_drifted(&window, bounds) {
+            return Ok(started.elapsed().as_secs_f64() * 1000.0);
+        }
+        // Windows can move or maximize the hidden overlay on its own (display rearrangement,
+        // resume from sleep), which shifts the frozen frame against the real screen.
+        if window.is_maximized().unwrap_or(false) {
+            window.unmaximize().map_err(|error| error.to_string())?;
+        }
+        position_window(&window, bounds)?;
         return Ok(started.elapsed().as_secs_f64() * 1000.0);
     }
 
@@ -180,6 +188,20 @@ fn create_overlay(app: &AppHandle) -> Result<WebviewWindow, String> {
         .focused(false)
         .build()
         .map_err(|error| format!("Could not create capture overlay: {error}"))
+}
+
+/// Linux keeps the overlay fullscreen across all monitors, so its geometry is managed there.
+#[cfg(target_os = "linux")]
+fn geometry_drifted(_window: &WebviewWindow, _bounds: VirtualBounds) -> bool {
+    false
+}
+
+#[cfg(not(target_os = "linux"))]
+fn geometry_drifted(window: &WebviewWindow, bounds: VirtualBounds) -> bool {
+    let expected_position = PhysicalPosition::new(bounds.x, bounds.y);
+    let expected_size = PhysicalSize::new(bounds.width, bounds.height);
+    window.outer_position().ok() != Some(expected_position)
+        || window.outer_size().ok() != Some(expected_size)
 }
 
 fn position_window(window: &WebviewWindow, bounds: VirtualBounds) -> Result<(), String> {
